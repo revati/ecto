@@ -511,6 +511,7 @@ defmodule Ecto.Schema do
         @after_compile Ecto.Schema
         Module.register_attribute(__MODULE__, :changeset_fields, accumulate: true)
         Module.register_attribute(__MODULE__, :struct_fields, accumulate: true)
+        Module.register_attribute(__MODULE__, :fields_meta, accumulate: true)
 
         meta?  = unquote(meta?)
         source = unquote(source)
@@ -565,6 +566,7 @@ defmodule Ecto.Schema do
         embeds = @ecto_embeds |> Enum.reverse
         redacted_fields = @ecto_redact_fields
         loaded = Ecto.Schema.__loaded__(__MODULE__, @struct_fields)
+        fields_meta = @fields_meta |> Enum.reverse
 
         if redacted_fields != [] and not List.keymember?(@derive, Inspect, 0) and
              @ecto_derive_inspect_for_redacted_fields do
@@ -589,6 +591,7 @@ defmodule Ecto.Schema do
         def __schema__(:autoupdate), do: unquote(Macro.escape(autoupdate))
         def __schema__(:loaded), do: unquote(Macro.escape(loaded))
         def __schema__(:redact_fields), do: unquote(redacted_fields)
+        def __schema__(:fields_meta), do: unquote(fields_meta)
 
         def __schema__(:query) do
           %Ecto.Query{
@@ -1795,6 +1798,7 @@ defmodule Ecto.Schema do
   def __field__(mod, name, type, opts) do
     type = check_field_type!(mod, name, type, opts)
     Module.put_attribute(mod, :changeset_fields, {name, type})
+    Module.put_attribute(mod, :fields_meta, {name, [type: type] ++ opts})
     define_field(mod, name, type, opts)
   end
 
@@ -1856,6 +1860,7 @@ defmodule Ecto.Schema do
       check_options!(opts, @valid_has_options, "has_many/3")
       struct = association(mod, :many, name, Ecto.Association.Has, [queryable: queryable] ++ opts)
       Module.put_attribute(mod, :changeset_fields, {name, {:assoc, struct}})
+      Module.put_attribute(mod, :fields_meta, {name, [type: struct] ++ opts})
     end
   end
 
@@ -1868,6 +1873,7 @@ defmodule Ecto.Schema do
       check_options!(opts, @valid_has_options, "has_one/3")
       struct = association(mod, :one, name, Ecto.Association.Has, [queryable: queryable] ++ opts)
       Module.put_attribute(mod, :changeset_fields, {name, {:assoc, struct}})
+      Module.put_attribute(mod, :fields_meta, {name, [type: struct] ++ opts})
     end
   end
 
@@ -1894,6 +1900,7 @@ defmodule Ecto.Schema do
     struct =
       association(mod, :one, name, Ecto.Association.BelongsTo, [queryable: queryable] ++ opts)
     Module.put_attribute(mod, :changeset_fields, {name, {:assoc, struct}})
+    Module.put_attribute(mod, :fields_meta, {name, [type: struct] ++ opts})
   end
 
   @valid_many_to_many_options [:join_through, :join_defaults, :join_keys, :on_delete, :defaults, :on_replace, :unique, :where, :join_where]
@@ -1905,6 +1912,7 @@ defmodule Ecto.Schema do
     struct =
       association(mod, :many, name, Ecto.Association.ManyToMany, [queryable: queryable] ++ opts)
     Module.put_attribute(mod, :changeset_fields, {name, {:assoc, struct}})
+    Module.put_attribute(mod, :fields_meta, {name, [type: struct] ++ opts})
   end
 
   @valid_embeds_one_options [:strategy, :on_replace, :source]
@@ -2040,6 +2048,8 @@ defmodule Ecto.Schema do
     struct = Ecto.Embedded.init(opts)
 
     Module.put_attribute(mod, :changeset_fields, {name, {:embed, struct}})
+    Module.put_attribute(mod, :fields_meta, {name, [type: struct] ++ opts})
+
     Module.put_attribute(mod, :ecto_embeds, {name, struct})
     define_field(mod, name, {:parameterized, Ecto.Embedded, struct}, opts)
   end

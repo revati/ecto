@@ -69,6 +69,10 @@ defmodule Ecto.SchemaTest do
     assert Ecto.primary_key(%Schema{id: "hello"}) == [id: "hello"]
   end
 
+  test "can store all field meta data" do
+    IO.inspect(Schema.__schema__(:fields_meta))
+  end
+
   test "reads and writes metadata" do
     schema = %Schema{}
     assert schema.__meta__.source == "my schema"
