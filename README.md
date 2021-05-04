@@ -2,7 +2,7 @@
 
 ---
 
-[![Build Status](https://github.com/elixir-ecto/ecto/workflows/CI/badge.svg)](https://github.com/elixir-ecto/ecto/actions)
+[![Build Status](https://github.com/elixir-ecto/ecto/workflows/CI/badge.svg)](https://github.com/elixir-ecto/ecto/actions) [![Hex.pm](https://img.shields.io/hexpm/v/ecto.svg)](https://hex.pm/packages/ecto)
 
 Ecto is a toolkit for data mapping and language integrated query for Elixir. Here is an example:
 
@@ -58,7 +58,7 @@ defmodule Sample.App do
 end
 ```
 
-Ecto is commonly used to interact with databases, such as Postgres and MySQL via [Ecto.Adapters.SQL](http://hexdocs.pm/ecto_sql) ([source code](https://github.com/elixir-ecto/ecto_sql)). Ecto is also commonly used to map data from any source into Elixir structs, regardless if they are backed by a database or not.
+Ecto is commonly used to interact with databases, such as Postgres and MySQL via [Ecto.Adapters.SQL](http://hexdocs.pm/ecto_sql) ([source code](https://github.com/elixir-ecto/ecto_sql)). Ecto is also commonly used to map data from any source into Elixir structs, whether they are backed by a database or not.
 
 See the [getting started guide](http://hexdocs.pm/ecto/getting-started.html) and the [online documentation](http://hexdocs.pm/ecto) for more information. Other resources available are:
 
@@ -75,6 +75,7 @@ Database   | Ecto Adapter           | Dependencies
 PostgreSQL | Ecto.Adapters.Postgres | [ecto_sql][ecto_sql] (requires Ecto v3.0+) + [postgrex][postgrex]
 MySQL      | Ecto.Adapters.MyXQL    | [ecto_sql][ecto_sql] (requires Ecto v3.3+) + [myxql][myxql]
 MSSQL      | Ecto.Adapters.Tds      | [ecto_sql][ecto_sql] (requires Ecto v3.4+) + [tds][tds]
+SQLite3    | Ecto.Adapters.SQLite3  | [ecto_sql][ecto_sql] (requires Ecto v3.5+) + [ecto_sqlite3][ecto_sqlite3]
 ETS        | Etso                   | [ecto][ecto] + [etso][etso]
 
 [ecto]: http://github.com/elixir-ecto/ecto
@@ -82,6 +83,7 @@ ETS        | Etso                   | [ecto][ecto] + [etso][etso]
 [postgrex]: http://github.com/elixir-ecto/postgrex
 [myxql]: http://github.com/elixir-ecto/myxql
 [tds]: https://github.com/livehelpnow/tds
+[ecto_sqlite3]: https://github.com/elixir-sqlite/ecto_sqlite3
 [etso]: https://github.com/evadne/etso
 
 For example, if you want to use PostgreSQL, add to your `mix.exs` file:
@@ -129,7 +131,7 @@ With the version 3.0, Ecto has become API stable. This means our main focus is o
   * [Mailing list](https://groups.google.com/forum/#!forum/elixir-ecto)
   * [Examples](https://github.com/elixir-ecto/ecto/tree/master/examples)
 
-### Running tests
+## Running tests
 
 Clone the repo and fetch its dependencies:
 
@@ -145,6 +147,22 @@ Note that `mix test` does not run the tests in the `integration_test` folder. To
     $ cd ecto_sql
     $ mix deps.get
     $ ECTO_PATH=../ecto mix test.all
+
+### Running containerized tests
+
+It is also possible to run the integration tests under a containerized environment using [earthly](https://earthly.dev/get-earthly):
+
+    $ earthly -P +all
+
+You can also use this to interactively debug any failing integration tests using:
+
+    $ earthly -P -i --build-arg ELIXIR_BASE=1.8.2-erlang-20.3.8.26-alpine-3.11.6 +integration-test
+
+Then once you enter the containerized shell, you can inspect the underlying databases with the respective commands:
+
+    PGPASSWORD=postgres psql -h 127.0.0.1 -U postgres -d postgres ecto_test
+    MYSQL_PASSWORD=root mysql -h 127.0.0.1 -uroot -proot ecto_test
+    sqlcmd -U sa -P 'some!Password'
 
 ## Logo
 

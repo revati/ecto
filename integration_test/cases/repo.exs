@@ -706,6 +706,51 @@ defmodule Ecto.Integration.RepoTest do
     end
   end
 
+  test "reload" do
+    post1 = TestRepo.insert!(%Post{title: "1", visits: 1})
+    post2 = TestRepo.insert!(%Post{title: "2", visits: 2})
+
+    assert post1 == TestRepo.reload(post1)
+    assert [post1, post2] == TestRepo.reload([post1, post2])
+    assert [post1, post2, nil] == TestRepo.reload([post1, post2, %Post{id: 55}])
+    assert nil == TestRepo.reload(%Post{id: 55})
+
+    # keeps order as received in the params
+    assert [post2, post1] == TestRepo.reload([post2, post1])
+
+    TestRepo.update_all(Post, inc: [visits: 1])
+
+    assert [%{visits: 2}, %{visits: 3}] = TestRepo.reload([post1, post2])
+  end
+
+  test "reload ignores preloads" do
+    post = TestRepo.insert!(%Post{title: "1", visits: 1}) |> TestRepo.preload(:comments)
+
+    assert %{comments: %Ecto.Association.NotLoaded{}} = TestRepo.reload(post)
+  end
+
+  test "reload!" do
+    post1 = TestRepo.insert!(%Post{title: "1", visits: 1})
+    post2 = TestRepo.insert!(%Post{title: "2", visits: 2})
+
+    assert post1 == TestRepo.reload!(post1)
+    assert [post1, post2] == TestRepo.reload!([post1, post2])
+
+    assert_raise RuntimeError, ~r"could not reload", fn ->
+      TestRepo.reload!([post1, post2, %Post{id: 55}])
+    end
+
+    assert_raise Ecto.NoResultsError, fn ->
+      TestRepo.reload!(%Post{id: 55})
+    end
+
+    assert [post2, post1] == TestRepo.reload([post2, post1])
+
+    TestRepo.update_all(Post, inc: [visits: 1])
+
+    assert [%{visits: 2}, %{visits: 3}] = TestRepo.reload!([post1, post2])
+  end
+
   test "first, last and one(!)" do
     post1 = TestRepo.insert!(%Post{title: "1"})
     post2 = TestRepo.insert!(%Post{title: "2"})
@@ -809,7 +854,7 @@ defmodule Ecto.Integration.RepoTest do
   end
 
   @tag :insert_select
-  test "insert all with query" do
+  test "insert all with query for single fields" do
     comment = TestRepo.insert!(%Comment{text: "1", lock_version: 1})
 
     text_query = from(c in Comment, select: c.text, where: [id: ^comment.id, lock_version: 1])
@@ -834,6 +879,88 @@ defmodule Ecto.Integration.RepoTest do
             %Comment{text: "1"},
             %Comment{text: "1", lock_version: 1},
             %Comment{text: "6", lock_version: 6}] = inserted_rows
+  end
+
+  describe "insert_all with source query" do
+    @tag :upsert
+    @tag :with_conflict_target
+    @tag :concat
+    test "insert_all with query and conflict target" do
+      {:ok, %Post{id: id}} = TestRepo.insert(%Post{
+        title: "A generic title"
+      })
+
+      source = from p in Post,
+        select: %{
+          title: fragment("concat(?, ?, ?)", p.title, type(^" suffix ", :string), p.id)
+        }
+
+      assert {1, _} = TestRepo.insert_all(Post, source, conflict_target: [:id], on_conflict: :replace_all)
+
+      expected_id = id + 1
+      expected_title = "A generic title suffix #{id}"
+
+      assert %Post{title: ^expected_title} = TestRepo.get(Post, expected_id)
+    end
+
+    @tag :returning
+    @tag :concat
+    test "insert_all with query and returning" do
+      {:ok, %Post{id: id}} = TestRepo.insert(%Post{
+        title: "A generic title"
+      })
+
+      source = from p in Post,
+        select: %{
+          title: fragment("concat(?, ?, ?)", p.title, type(^" suffix ", :string), p.id)
+        }
+
+      assert {1, returns} = TestRepo.insert_all(Post, source, returning: [:id, :title])
+
+      expected_id = id + 1
+      expected_title = "A generic title suffix #{id}"
+      assert [%Post{id: ^expected_id, title: ^expected_title}] = returns
+    end
+
+    @tag :upsert
+    @tag :without_conflict_target
+    @tag :concat
+    test "insert_all with query and on_conflict" do
+      {:ok, %Post{id: id}} = TestRepo.insert(%Post{
+        title: "A generic title"
+      })
+
+      source = from p in Post,
+        select: %{
+          title: fragment("concat(?, ?, ?)", p.title, type(^" suffix ", :string), p.id)
+        }
+
+      assert {1, _} = TestRepo.insert_all(Post, source, on_conflict: :replace_all)
+
+      expected_id = id + 1
+      expected_title = "A generic title suffix #{id}"
+
+      assert %Post{title: ^expected_title} = TestRepo.get(Post, expected_id)
+    end
+
+    @tag :concat
+    test "insert_all with query" do
+      {:ok, %Post{id: id}} = TestRepo.insert(%Post{
+        title: "A generic title"
+      })
+
+      source = from p in Post,
+        select: %{
+          title: fragment("concat(?, ?, ?)", p.title, type(^" suffix ", :string), p.id)
+        }
+
+      assert {1, _} = TestRepo.insert_all(Post, source)
+
+      expected_id = id + 1
+      expected_title = "A generic title suffix #{id}"
+
+      assert %Post{title: ^expected_title} = TestRepo.get(Post, expected_id)
+    end
   end
 
   @tag :invalid_prefix
@@ -908,22 +1035,58 @@ defmodule Ecto.Integration.RepoTest do
     assert custom.bid == bid2
   end
 
+  describe "placeholders" do
+    @describetag :placeholders
+
+    test "Repo.insert_all fills in placeholders" do
+      placeholders = %{foo: 100, bar: "test"}
+      bar_ph = {:placeholder, :bar}
+      foo_ph = {:placeholder, :foo}
+
+      entries = [
+        %{intensity: 1.0, title: bar_ph, posted: ~D[2020-12-21], visits: foo_ph},
+        %{intensity: 2.0, title: bar_ph, posted: ~D[2000-12-21], visits: foo_ph}
+      ] |> Enum.map(&Map.put(&1, :uuid, Ecto.UUID.generate))
+
+      TestRepo.insert_all(Post, entries, placeholders: placeholders)
+
+      query = from(p in Post, select: {p.intensity, p.title, p.visits})
+      assert [{1.0, "test", 100}, {2.0, "test", 100}] == TestRepo.all(query)
+    end
+
+    test "Repo.insert_all accepts non-atom placeholder keys" do
+      placeholders = %{10 => "integer key", {:foo, :bar} => "tuple key"}
+      entries = [%{text: {:placeholder, 10}}, %{text: {:placeholder, {:foo, :bar}}}]
+      TestRepo.insert_all(Comment, entries, placeholders: placeholders)
+
+      query = from(c in Comment, select: c.text)
+      assert ["integer key", "tuple key"] == TestRepo.all(query)
+    end
+
+    test "Repo.insert_all fills in placeholders with keyword list entries" do
+      TestRepo.insert_all(Barebone, [[num: {:placeholder, :foo}]], placeholders: %{foo: 100})
+
+      query = from(b in Barebone, select: b.num)
+      assert [100] == TestRepo.all(query)
+    end
+  end
+
   test "update all" do
-    assert %Post{id: id1} = TestRepo.insert!(%Post{title: "1"})
-    assert %Post{id: id2} = TestRepo.insert!(%Post{title: "2"})
-    assert %Post{id: id3} = TestRepo.insert!(%Post{title: "3"})
+    assert post1 = TestRepo.insert!(%Post{title: "1"})
+    assert post2 = TestRepo.insert!(%Post{title: "2"})
+    assert post3 = TestRepo.insert!(%Post{title: "3"})
 
     assert {3, nil} = TestRepo.update_all(Post, set: [title: "x"])
 
-    assert %Post{title: "x"} = TestRepo.get(Post, id1)
-    assert %Post{title: "x"} = TestRepo.get(Post, id2)
-    assert %Post{title: "x"} = TestRepo.get(Post, id3)
+    assert %Post{title: "x"} = TestRepo.reload(post1)
+    assert %Post{title: "x"} = TestRepo.reload(post2)
+    assert %Post{title: "x"} = TestRepo.reload(post3)
 
     assert {3, nil} = TestRepo.update_all("posts", [set: [title: nil]])
 
-    assert %Post{title: nil} = TestRepo.get(Post, id1)
-    assert %Post{title: nil} = TestRepo.get(Post, id2)
-    assert %Post{title: nil} = TestRepo.get(Post, id3)
+    assert %Post{title: nil} = TestRepo.reload(post1)
+    assert %Post{title: nil} = TestRepo.reload(post2)
+    assert %Post{title: nil} = TestRepo.reload(post3)
   end
 
   @tag :invalid_prefix

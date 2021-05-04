@@ -262,10 +262,17 @@ defmodule Ecto.Query.Builder do
     do: {literal(number, type, vars), params_acc}
   def escape(binary, type, params_acc, vars, _env) when is_binary(binary),
     do: {literal(binary, type, vars), params_acc}
-  def escape(boolean, type, params_acc, vars, _env) when is_boolean(boolean),
-    do: {literal(boolean, type, vars), params_acc}
   def escape(nil, _type, params_acc, _vars, _env),
     do: {nil, params_acc}
+  def escape(atom, type, params_acc, vars, _env) when is_atom(atom),
+    do: {literal(atom, type, vars), params_acc}
+
+  # negate any expression
+  def escape({:-, meta, arg}, type, params_acc, vars, env) do
+    {escaped_arg, params_acc} = escape(arg, type, params_acc, vars, env)
+    expr = {:{}, [], [:-, meta, escaped_arg]}
+    {expr, params_acc}
+  end
 
   # comparison operators
   def escape({comp_op, _, [left, right]} = expr, type, params_acc, vars, env)
@@ -359,6 +366,11 @@ defmodule Ecto.Query.Builder do
     {{:{}, [], [:over, [], [aggregate, window]]}, params_acc}
   end
 
+  def escape({quantifier, meta, [subquery]}, type, params_acc, vars, env) when quantifier in [:all, :any, :exists] do
+    {subquery, params_acc} = escape_subquery({:subquery, meta, [subquery]}, type, params_acc, vars, env)
+    {{:{}, [], [quantifier, [], [subquery]]}, params_acc}
+  end
+
   def escape({:=, _, _} = expr, _type, _params_acc, _vars, _env) do
     error! "`#{Macro.to_string(expr)}` is not a valid query expression. " <>
             "The match operator is not supported: `=`. " <>
@@ -445,6 +457,11 @@ defmodule Ecto.Query.Builder do
     error! "`#{Macro.to_string(other)}` is not a valid query expression"
   end
 
+  defp escape_with_type(expr, {:^, _, [type]}, params_acc, vars, env) do
+    {expr, params_acc} = escape(expr, :any, params_acc, vars, env)
+    {{:{}, [], [:type, [], [expr, type]]}, params_acc}
+  end
+
   defp escape_with_type(expr, type, params_acc, vars, env) do
     type = validate_type!(type, vars, env)
     {expr, params_acc} = escape(expr, type, params_acc, vars, env)
@@ -461,7 +478,7 @@ defmodule Ecto.Query.Builder do
     escape(expr, type, params, vars, env)
   end
 
-  defp wrap_nil(params, {:{}, _, [:^, _, [ix]]}), do: wrap_nil(params, ix, [])
+  defp wrap_nil(params, {:{}, _, [:^, _, [ix]]}), do: wrap_nil(params, length(params) - ix - 1, [])
   defp wrap_nil(params, _other), do: params
 
   defp wrap_nil([{val, type} | params], 0, acc) do
@@ -644,9 +661,8 @@ defmodule Ecto.Query.Builder do
   @doc """
   Validates the type with the given vars.
   """
-  def validate_type!({composite, type}, vars, env) do
-    {composite, validate_type!(type, vars, env)}
-  end
+  def validate_type!({composite, type}, vars, env),
+    do: {composite, validate_type!(type, vars, env)}
   def validate_type!({:^, _, [type]}, _vars, _env),
     do: type
   def validate_type!({:__aliases__, _, _} = type, _vars, env),
@@ -1013,6 +1029,7 @@ defmodule Ecto.Query.Builder do
   def quoted_type(literal, _vars) when is_float(literal),   do: :float
   def quoted_type(literal, _vars) when is_binary(literal),  do: :string
   def quoted_type(literal, _vars) when is_boolean(literal), do: :boolean
+  def quoted_type(literal, _vars) when is_atom(literal) and not is_nil(literal), do: :atom
   def quoted_type(literal, _vars) when is_integer(literal), do: :integer
 
   # Tuples
@@ -1086,7 +1103,7 @@ defmodule Ecto.Query.Builder do
   given `module`, otherwise, it delegates the call to runtime.
 
   It is important to keep in mind the complexities introduced
-  by this function. In particular, a %Query{} is mixture of escaped
+  by this function. In particular, a %Query{} is a mixture of escaped
   and unescaped expressions which makes it impossible for this
   function to properly escape or unescape it at compile/runtime.
   For this reason, the apply function should be ready to handle
@@ -1116,21 +1133,24 @@ defmodule Ecto.Query.Builder do
   the query properly, but they will be in their runtime form
   when invoked at runtime.
   """
+  @spec apply_query(Macro.t, Macro.t, Macro.t, Macro.Env.t) :: Macro.t
   def apply_query(query, module, args, env) do
-    query = Macro.expand(query, env)
+    case Macro.expand(query, env) |> unescape_query() do
+      %Query{} = compiletime_query ->
+        apply(module, :apply, [compiletime_query | args])
+        |> escape_query()
 
-    case unescape_query(query) do
-      %Query{} = unescaped ->
-        apply(module, :apply, [unescaped|args]) |> escape_query
-      _ ->
+      runtime_query ->
         quote do
-          query = unquote(query) # Unquote the query for any binding variable
+          # Unquote the query before `module.apply()` for any binding variable.
+          query = unquote(runtime_query)
           unquote(module).apply(query, unquote_splicing(args))
         end
     end
   end
 
   # Unescapes an `Ecto.Query` struct.
+  @spec unescape_query(Macro.t) :: Query.t | Macro.t
   defp unescape_query({:%, _, [Query, {:%{}, _, list}]}) do
     struct(Query, list)
   end
@@ -1146,10 +1166,8 @@ defmodule Ecto.Query.Builder do
   end
 
   # Escapes an `Ecto.Query` and associated structs.
-  defp escape_query(%Query{} = query),
-    do: {:%{}, [], Map.to_list(query)}
-  defp escape_query(other),
-    do: other
+  @spec escape_query(Query.t) :: Macro.t
+  defp escape_query(%Query{} = query), do: {:%{}, [], Map.to_list(query)}
 
   defp parse_access_get({{:., _, [Access, :get]}, _, [left, right]}, acc) do
     parse_access_get(left, [right | acc])

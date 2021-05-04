@@ -74,17 +74,18 @@ defmodule Ecto.ParameterizedType do
   @typedoc """
   The parameters for the ParameterizedType
 
-  This is the value passed back from `c:init/1` and subsequently passed as the last argument to all callbacks.
-  Idiomatically it is a map.
+  This is the value passed back from `c:init/1` and subsequently passed
+  as the last argument to all callbacks. Idiomatically it is a map.
   """
   @type params :: term()
 
   @doc """
-  Callback to convert the options specified in  the field macro into parameters to be used in other callbacks.
+  Callback to convert the options specified in  the field macro into parameters
+  to be used in other callbacks.
 
-  This function is called at compile time, and should raise if invalid values are specified. It is idiomatic
-  that the parameters returned from this are a map. `field` and `schema` will be injected into the options
-  automatically
+  This function is called at compile time, and should raise if invalid values are
+  specified. It is idiomatic that the parameters returned from this are a map.
+  `field` and `schema` will be injected into the options automatically.
 
   For example, this schema specification
 
@@ -102,7 +103,11 @@ defmodule Ecto.ParameterizedType do
   @doc """
   Casts the given input to the ParameterizedType with the given parameters.
 
-  For more information on casting, see `c:Ecto.Type.cast/1`
+  If the parameterized type is also a composite type,
+  the inner type can be cast by calling `Ecto.Type.cast/2`
+  directly.
+
+  For more information on casting, see `c:Ecto.Type.cast/1`.
   """
   @callback cast(data :: term, params()) ::
               {:ok, term} | :error | {:error, keyword()}
@@ -110,18 +115,28 @@ defmodule Ecto.ParameterizedType do
   @doc """
   Loads the given term into a ParameterizedType.
 
-  For more information on loading, see `c:Ecto.Type.load/1`
+  It receives a `loader` function in case the parameterized
+  type is also a composite type. In order to load the inner
+  type, the `loader` must be called with the inner type and
+  the inner value as argument.
 
-  Note that this callback *will* be called when loading a `nil` value, unlike `c:Ecto.Type.load/1`.
+  For more information on loading, see `c:Ecto.Type.load/1`.
+  Note that this callback *will* be called when loading a `nil`
+  value, unlike `c:Ecto.Type.load/1`.
   """
   @callback load(value :: any(), loader :: function(), params()) :: {:ok, value :: any()} | :error
 
   @doc """
   Dumps the given term into an Ecto native type.
 
-  For more information on dumping, see `c:Ecto.Type.dump/1`
+  It receives a `dumper` function in case the parameterized
+  type is also a composite type. In order to dump the inner
+  type, the `dumper` must be called with the inner type and
+  the inner value as argument.
 
-  Note that this callback *will* be called when dumping a `nil` value, unlike `c:Ecto.Type.dump/1`.
+  For more information on dumping, see `c:Ecto.Type.dump/1`.
+  Note that this callback *will* be called when dumping a `nil`
+  value, unlike `c:Ecto.Type.dump/1`.
   """
   @callback dump(value :: any(), dumper :: function(), params()) :: {:ok, value :: any()} | :error
 
@@ -154,12 +169,26 @@ defmodule Ecto.ParameterizedType do
 
   @optional_callbacks autogenerate: 1
 
+  @doc """
+  Inits a parameterized type given by `type` with `opts`.
+
+  Useful when manually initializing a type for schemaless changesets.
+  """
+  def init(type, opts) do
+    {:parameterized, type, type.init(opts)}
+  end
+
   @doc false
   defmacro __using__(_) do
     quote location: :keep do
       @behaviour Ecto.ParameterizedType
+
+      @doc false
       def embed_as(_, _), do: :self
+
+      @doc false
       def equal?(term1, term2, _params), do: term1 == term2
+
       defoverridable embed_as: 2, equal?: 3
     end
   end

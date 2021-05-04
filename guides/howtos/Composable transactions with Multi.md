@@ -1,6 +1,6 @@
 # Composable transactions with Multi
 
-Ecto relies on database transactions when multiple operations must be performed atomically. The most common example used for transaction are bank transfers between two people:
+Ecto relies on database transactions when multiple operations must be performed atomically. The most common example used for transactions are bank transfers between two people:
 
 ```elixir
 Repo.transaction(fn ->
@@ -40,6 +40,7 @@ Repo.transaction(fn ->
         {1, _} -> {mary, john}
         {_, _} -> Repo.rollback({:failed_transfer, john})
       end
+
     {_, _} ->
       Repo.rollback({:failed_transfer, mary})
   end
@@ -66,7 +67,7 @@ Repo.transaction(fn ->
 end)
 ```
 
-The snippet above starts a transaction and then calls `transfer_money/3` that also runs in a transaction. In case of multiple transactions, they are all flattened, which means a failure in an inner transaction causes the outer transaction to also fail. That's why matching and rolling back on `{:error, error}` is important.
+The snippet above starts a transaction and then calls `transfer_money/3` that also runs in a transaction. In the case of multiple transactions, they are all flattened, which means a failure in an inner transaction causes the outer transaction to also fail. That's why matching and rolling back on `{:error, error}` is important.
 
 While nesting transactions can improve the code readability by breaking large transactions into multiple smaller transactions, there is still a lot of boilerplate involved in handling the success and failure scenarios. Furthermore, composition is quite limited, as all operations must still be performed inside transaction blocks.
 
@@ -74,7 +75,7 @@ A more declarative approach when working with transactions would be to define al
 
 ## Composing with data structures
 
-Let's rewrite the snippets above using `Ecto.Multi`. The first snippet that transfers money between mary and john can rewritten to:
+Let's rewrite the snippets above using `Ecto.Multi`. The first snippet that transfers money between Mary and John can rewritten to:
 
 ```elixir
 mary_update =
@@ -92,7 +93,7 @@ Ecto.Multi.new()
 |> Ecto.Multi.update_all(:john, john_update)
 ```
 
-`Ecto.Multi` is a data structure that defines multiple operations that must be performed together, without worrying about when they will be executed. `Ecto.Multi` mirrors most of the `Ecto.Repo` API, with the difference each operation must be explicitly named. In the example above, we have defined two update operations, named `:mary` and `:john`. As we will see later, the names are important when handling the transaction results.
+`Ecto.Multi` is a data structure that defines multiple operations that must be performed together, without worrying about when they will be executed. `Ecto.Multi` mirrors most of the `Ecto.Repo` API, with the difference that each operation must be explicitly named. In the example above, we have defined two update operations, named `:mary` and `:john`. As we will see later, the names are important when handling the transaction results.
 
 Since `Ecto.Multi` is just a data structure, we can pass it as argument to other functions, as well as return it. Assuming the multi above is moved into its own function, defined as `transfer_money(mary, john, value)`,  we can add a new operation to the multi that logs the transfer as follows:
 
@@ -133,9 +134,9 @@ In other words, `Ecto.Multi` takes care of all the flow control boilerplate whil
 
 ## Dependent values
 
-Besides operations such as `insert`, `update` and `delete`, `Ecto.Multi` also provides functions for handling more complex scenarios. For example, `prepend` and `append` can be used to merge multis together. And more generally, the `Ecto.Multi.run/3` and `Ecto.Multi.run/5` can be used to define any operation that depends on the results of a previous multi operation.
+Besides operations such as `insert`, `update` and `delete`, `Ecto.Multi` also provides functions for handling more complex scenarios. For example, `prepend` and `append` can be used to merge multis together. And more generally, the functions `Ecto.Multi.run/3` and `Ecto.Multi.run/5` can be used to define any operation that depends on the results of a previous multi operation. In addition, `Ecto.Multi` also gives us `put` and `inspect`, which allow us to dynamically update and inspect changes.
 
-Let's study a more practical example. In [Constraints and Upserts](constraints-and-upserts.html), we want to modify a post while possibly giving it a list of tags as a string separated by commas. At the end of the guide, we present a solution that insert any missing tag and then fetch all of them using only two queries:
+Let's study a more practical example. In [Constraints and Upserts](Constraints and Upserts.md), we want to modify a post while possibly giving it a list of tags as a string separated by commas. At the end of the guide, we present a solution that inserts any missing tag and then fetches all of them using only two queries:
 
 ```elixir
 defmodule MyApp.Post do
@@ -170,6 +171,7 @@ defmodule MyApp.Post do
   defp insert_and_get_all([]) do
     []
   end
+
   defp insert_and_get_all(names) do
     timestamp =
       NaiveDateTime.utc_now()
@@ -182,8 +184,9 @@ defmodule MyApp.Post do
         updated_at: timestamp
       })
 
-    Repo.insert_all MyApp.Tag, maps, on_conflict: :nothing
-    Repo.all from t in MyApp.Tag, where: t.name in ^names
+    Repo.insert_all(MyApp.Tag, maps, on_conflict: :nothing)
+
+    Repo.all(from t in MyApp.Tag, where: t.name in ^names)
   end
 end
 ```
@@ -236,10 +239,10 @@ alias MyApp.Tag
 
 def insert_or_update_post_with_tags(post, params) do
   Ecto.Multi.new()
-  |> Ecto.Multi.run(:tags, fn _, changes ->
+  |> Ecto.Multi.run(:tags, fn _repo, changes ->
     insert_and_get_all_tags(changes, params)
   end)
-  |> Ecto.Multi.run(:post, fn _, changes ->
+  |> Ecto.Multi.run(:post, fn _repo, changes ->
     insert_or_update_post(changes, post, params)
   end)
   |> Repo.transaction()
@@ -263,14 +266,17 @@ defp insert_and_get_all_tags(_changes, params) do
         })
 
       Repo.insert_all(Tag, maps, on_conflict: :nothing)
+
       query = from t in Tag, where: t.name in ^names
+
       {:ok, Repo.all(query)}
   end
 end
 
 defp insert_or_update_post(%{tags: tags}, post, params) do
-  post = MyApp.Post.changeset(post, tags, params)
-  Repo.insert_or_update post
+  post
+  |> MyApp.Post.changeset(tags, params)
+  |> Repo.insert_or_update()
 end
 ```
 

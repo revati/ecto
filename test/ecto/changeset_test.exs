@@ -1,6 +1,7 @@
 defmodule Ecto.ChangesetTest do
   use ExUnit.Case, async: true
   import Ecto.Changeset
+  require Ecto.Query
 
   defmodule SocialSource do
     use Ecto.Schema
@@ -18,6 +19,8 @@ defmodule Ecto.ChangesetTest do
 
   defmodule Category do
     use Ecto.Schema
+
+    @primary_key {:category_id, :id, autogenerate: true}
 
     schema "categories" do
       field :name, :string
@@ -49,9 +52,22 @@ defmodule Ecto.ChangesetTest do
       field :published_at, :naive_datetime
       field :source, :map
       field :permalink, :string, source: :url
-      belongs_to :category, Ecto.ChangesetTest.Category, source: :cat_id
+      belongs_to :category, Ecto.ChangesetTest.Category, references: :category_id, source: :cat_id
       has_many :comments, Ecto.ChangesetTest.Comment, on_replace: :delete
       has_one :comment, Ecto.ChangesetTest.Comment
+    end
+  end
+
+  defmodule NoSchemaPost do
+    defstruct [:title, :upvotes]
+  end
+
+  defmodule SinglePkSchema do
+    use Ecto.Schema
+
+    schema "posts" do
+      field :body
+      field :published_at, :naive_datetime
     end
   end
 
@@ -160,6 +176,19 @@ defmodule Ecto.ChangesetTest do
     assert changeset.errors == []
     assert changeset.valid?
     assert apply_changes(changeset) == %{title: "world", upvotes: 0}
+  end
+
+  test "cast/4: with data struct and types" do
+    data   = {%NoSchemaPost{title: "hello"}, %{title: :string, upvotes: :integer}}
+    params = %{"title" => "world", "upvotes" => "0"}
+
+    changeset = cast(data, params, ~w(title upvotes)a)
+    assert changeset.params == params
+    assert changeset.data  == %NoSchemaPost{title: "hello"}
+    assert changeset.changes == %{title: "world", upvotes: 0}
+    assert changeset.errors == []
+    assert changeset.valid?
+    assert apply_changes(changeset) == %NoSchemaPost{title: "world", upvotes: 0}
   end
 
   test "cast/4: with dynamic embed" do
@@ -728,13 +757,30 @@ defmodule Ecto.ChangesetTest do
 
   test "apply_changes/1" do
     post = %Post{}
+    category = %Category{name: "bar"}
+
     assert post.title == ""
 
-    changeset = changeset(post, %{"title" => "foo"})
+    changeset = post
+    |> changeset(%{"title" => "foo"})
+    |> put_assoc(:category, category)
+
     changed_post = apply_changes(changeset)
 
     assert changed_post.__struct__ == post.__struct__
     assert changed_post.title == "foo"
+    assert changed_post.category_id == category.category_id
+
+    changeset = post
+    |> changeset(%{"title" => "foo"})
+    |> put_assoc(:category, nil)
+
+    changed_post = apply_changes(changeset)
+
+    assert changed_post.__struct__ == post.__struct__
+    assert changed_post.title == "foo"
+    assert changed_post.category_id == nil
+    assert changed_post.category == nil
   end
 
   describe "apply_action/2" do
@@ -1346,7 +1392,7 @@ defmodule Ecto.ChangesetTest do
 
   alias Ecto.TestRepo
 
-  describe "unsafe_validate_unique/3" do
+  describe "unsafe_validate_unique/4" do
     setup do
       dup_result = {1, [true]}
       no_dup_result = {0, []}
@@ -1433,21 +1479,68 @@ defmodule Ecto.ChangesetTest do
                [foo: {"is taken", validation: :unsafe_unique, fields: [:title]}]
     end
 
-    test "accepts a prefix option", context do
-      Process.put(:test_repo_all_results, context.dup_result)
+    test "accepts a prefix option" do
+      body_change = changeset(%Post{title: "Hello World", body: "hi"}, %{body: "ho"})
+      unsafe_validate_unique(body_change, :body, MockRepo, prefix: "my_prefix")
+      assert_receive [MockRepo, function: :one, query: %Ecto.Query{prefix: "my_prefix"}, opts: []]
+    end
 
-      changeset =
-        unsafe_validate_unique(context.base_changeset, :title, TestRepo, prefix: "public")
+    test "accepts repo options" do
+      body_change = changeset(%Post{title: "Hello World", body: "hi"}, %{body: "ho"})
+      unsafe_validate_unique(body_change, :body, MockRepo, repo_opts: [tenant_id: 1])
+      assert_receive [MockRepo, function: :one, query: %Ecto.Query{}, opts: [tenant_id: 1]]
+    end
 
-      assert changeset.errors ==
-               [title: {"has already been taken", validation: :unsafe_unique, fields: [:title]}]
+    test "accepts query options" do
+      body_change = changeset(%Post{title: "Hello World", body: "hi"}, %{body: "ho"})
+      unsafe_validate_unique(body_change, :body, MockRepo, query: Ecto.Query.from(p in Post, where: is_nil(p.published_at)))
+      assert_receive [MockRepo, function: :one, query: %Ecto.Query{wheres: wheres}, opts: []]
+      assert [%{expr: query_expr}, %{expr: check_expr}] = wheres
 
-      Process.put(:test_repo_all_results, context.no_dup_result)
+      assert Macro.to_string(query_expr) == "is_nil(&0.published_at())"
+      assert Macro.to_string(check_expr) == "&0.body() == ^0"
+    end
 
-      changeset =
-        unsafe_validate_unique(context.base_changeset, :title, TestRepo, prefix: "public")
+    test "generates correct where clause for single primary key without query option" do
+      body_change = cast(%SinglePkSchema{id: 0, body: "hi"}, %{body: "ho"}, [:body])
+      unsafe_validate_unique(body_change, :body, MockRepo)
+      assert_receive [MockRepo, function: :one, query: %Ecto.Query{wheres: wheres}, opts: []]
+      assert [%{expr: pk_expr}, %{expr: check_expr}] = wheres
 
-      assert changeset.valid?
+      assert Macro.to_string(pk_expr) == "not(&0.id() == ^0)"
+      assert Macro.to_string(check_expr) == "&0.body() == ^0"
+    end
+
+    test "generates correct where clause for composite primary keys without query option" do
+      body_change = changeset(%Post{id: 0, token: 1, body: "hi"}, %{body: "ho"})
+      unsafe_validate_unique(body_change, :body, MockRepo)
+      assert_receive [MockRepo, function: :one, query: %Ecto.Query{wheres: wheres}, opts: []]
+      assert [%{expr: pk_expr}, %{expr: check_expr}] = wheres
+
+      assert Macro.to_string(pk_expr) == "not(&0.id() == ^0 and &0.token() == ^1)"
+      assert Macro.to_string(check_expr) == "&0.body() == ^0"
+    end
+
+    test "generates correct where clause for single primary key with query option" do
+      body_change = cast(%SinglePkSchema{id: 0, body: "hi"}, %{body: "ho"}, [:body])
+      unsafe_validate_unique(body_change, :body, MockRepo, query: Ecto.Query.from(p in SinglePkSchema, where: is_nil(p.published_at)))
+      assert_receive [MockRepo, function: :one, query: %Ecto.Query{wheres: wheres}, opts: []]
+      assert [%{expr: query_expr}, %{expr: pk_expr}, %{expr: check_expr}] = wheres
+
+      assert Macro.to_string(query_expr) == "is_nil(&0.published_at())"
+      assert Macro.to_string(pk_expr) == "not(&0.id() == ^0)"
+      assert Macro.to_string(check_expr) == "&0.body() == ^0"
+    end
+
+    test "generates correct where clause for composite primary keys with query option" do
+      body_change = changeset(%Post{id: 0, token: 1, body: "hi"}, %{body: "ho"})
+      unsafe_validate_unique(body_change, :body, MockRepo, query: Ecto.Query.from(p in Post, where: is_nil(p.published_at)))
+      assert_receive [MockRepo, function: :one, query: %Ecto.Query{wheres: wheres}, opts: []]
+      assert [%{expr: query_expr}, %{expr: pk_expr}, %{expr: check_expr}] = wheres
+
+      assert Macro.to_string(query_expr) == "is_nil(&0.published_at())"
+      assert Macro.to_string(pk_expr) == "not(&0.id() == ^0 and &0.token() == ^1)"
+      assert Macro.to_string(check_expr) == "&0.body() == ^0"
     end
 
     test "only queries the db when necessary" do
@@ -1481,7 +1574,7 @@ defmodule Ecto.ChangesetTest do
     assert changeset.changes == %{upvotes: 1}
     assert prepared_changes(changeset) == %{upvotes: 2}
 
-    # Assert default increment will rollover to 1 when the current one is equal or graeter than 2_147_483_647
+    # Assert default increment will rollover to 1 when the current one is equal or greater than 2_147_483_647
     changeset = changeset(%Post{upvotes: 2_147_483_647}, %{}) |> optimistic_lock(:upvotes)
     assert changeset.filters == %{upvotes: 2_147_483_647}
     assert changeset.changes == %{}
@@ -1776,6 +1869,13 @@ defmodule Ecto.ChangesetTest do
       assert inspect(changeset(%{"title" => "title", "body" => "hi"})) ==
             "#Ecto.Changeset<action: nil, changes: %{body: \"hi\", title: \"title\"}, " <>
             "errors: [], data: #Ecto.ChangesetTest.Post<>, valid?: true>"
+
+      data   = {%NoSchemaPost{title: "hello"}, %{title: :string, upvotes: :integer}}
+      params = %{"title" => "world", "upvotes" => "0"}
+
+      assert inspect(cast(data, params, ~w(title upvotes)a)) ==
+               "#Ecto.Changeset<action: nil, changes: %{title: \"world\", upvotes: 0}, " <>
+               "errors: [], data: #Ecto.ChangesetTest.NoSchemaPost<>, valid?: true>"
     end
 
     test "redacts fields marked redact: true" do

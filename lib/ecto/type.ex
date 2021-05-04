@@ -7,9 +7,9 @@ defmodule Ecto.Type do
   parameterized types. Basic types are simple, requiring only four
   callbacks to be implemented, and are enough for most occasions.
   Parameterized types can be customized on the field definition and
-  provide a wilder variety of callbacks.
+  provide a wide variety of callbacks.
 
-  The definition of basic custom types and all of its callbacks is
+  The definition of basic custom types and all of their callbacks are
   available in this module. You can learn more about parameterized
   types in `Ecto.ParameterizedType`. If in doubt, prefer to use
   basic custom types and rely on parameterized types if you need
@@ -17,9 +17,9 @@ defmodule Ecto.Type do
 
   ## Example
 
-  Imagine you want to store an URI struct as part of a schema in an
+  Imagine you want to store a URI struct as part of a schema in a
   url-shortening service. There isn't an Ecto field type to support
-  that value at runtime, therefore a custom one is needed.
+  that value at runtime therefore a custom one is needed.
 
   You also want to query not only by the full url, but for example
   by specific ports used. This is possible by putting the URI data
@@ -51,7 +51,7 @@ defmodule Ecto.Type do
         def cast(_), do: :error
 
         # When loading data from the database, as long as it's a map,
-        # we just put the data back into an URI struct to be stored in
+        # we just put the data back into a URI struct to be stored in
         # the loaded schema struct.
         def load(data) when is_map(data) do
           data =
@@ -61,7 +61,7 @@ defmodule Ecto.Type do
           {:ok, struct!(URI, data)}
         end
 
-        # When dumping data to the database, we *expect* an URI struct
+        # When dumping data to the database, we *expect* a URI struct
         # but any value could be inserted into the schema struct at runtime,
         # so we need to guard against them.
         def dump(%URI{} = uri), do: {:ok, Map.from_struct(uri)}
@@ -90,7 +90,7 @@ defmodule Ecto.Type do
   Imagine you want to encode the ID so they cannot enumerate the
   content in your application. An Ecto type could handle the conversion
   between the encoded version of the id and its representation in the
-  database. For the sake of simplicity we'll use base64 encoding in
+  database. For the sake of simplicity, we'll use base64 encoding in
   this example:
 
       defmodule EncodedId do
@@ -491,9 +491,9 @@ defmodule Ecto.Type do
     end
   end
 
-  def dump({:array, type}, value, dumper), do: array(value, type, dumper, [])
-  def dump({:map, type}, value, dumper), do: map(value, type, dumper, %{})
-  def dump({:parameterized, mod, params}, value, dumper), do: mod.dump(value, dumper, params)
+  def dump({:array, {_, _, _} = type}, value, dumper), do: array(value, type, dumper, false, [])
+  def dump({:array, type}, value, dumper), do: array(value, type, dumper, true, [])
+  def dump({:map, type}, value, dumper), do: map(value, type, dumper, false, %{})
 
   def dump(:any, value, _dumper), do: {:ok, value}
   def dump(:integer, value, _dumper), do: same_integer(value)
@@ -585,9 +585,9 @@ defmodule Ecto.Type do
     end
   end
 
-  def load({:array, type}, value, loader), do: array(value, type, loader, [])
-  def load({:map, type}, value, loader), do: map(value, type, loader, %{})
-  def load({:parameterized, mod, params}, value, loader), do: mod.load(value, loader, params)
+  def load({:array, {_, _, _} = type}, value, loader), do: array(value, type, loader, false, [])
+  def load({:array, type}, value, loader), do: array(value, type, loader, true, [])
+  def load({:map, type}, value, loader), do: map(value, type, loader, false, %{})
 
   def load(:any, value, _loader), do: {:ok, value}
   def load(:integer, value, _loader), do: same_integer(value)
@@ -720,6 +720,8 @@ defmodule Ecto.Type do
 
       iex> cast(:decimal, Decimal.new("1.0"))
       {:ok, Decimal.new("1.0")}
+      iex> cast(:decimal, "1.0bad")
+      :error
 
       iex> cast({:array, :integer}, [1, 2, 3])
       {:ok, [1, 2, 3]}
@@ -765,10 +767,29 @@ defmodule Ecto.Type do
   defp cast_fun(:utc_datetime), do: &maybe_truncate_usec(cast_utc_datetime(&1))
   defp cast_fun(:utc_datetime_usec), do: &maybe_pad_usec(cast_utc_datetime(&1))
   defp cast_fun({:param, :any_datetime}), do: &cast_any_datetime(&1)
-  defp cast_fun({:in, type}), do: &array(&1, cast_fun(type), [])
-  defp cast_fun({:array, type}), do: &array(&1, cast_fun(type), [])
-  defp cast_fun({:map, type}), do: &map(&1, cast_fun(type), %{})
   defp cast_fun({:parameterized, mod, params}), do: &mod.cast(&1, params)
+  defp cast_fun({:in, type}), do: cast_fun({:array, type})
+
+  defp cast_fun({:array, {:parameterized, _, _} = type}) do
+    fun = cast_fun(type)
+    &array(&1, fun, false, [])
+  end
+
+  defp cast_fun({:array, type}) do
+    fun = cast_fun(type)
+    &array(&1, fun, true, [])
+  end
+
+  defp cast_fun({:map, {:parameterized, _, _} = type}) do
+    fun = cast_fun(type)
+    &map(&1, fun, false, %{})
+  end
+
+  defp cast_fun({:map, type}) do
+    fun = cast_fun(type)
+    &map(&1, fun, true, %{})
+  end
+
   defp cast_fun(mod) when is_atom(mod) do
     fn
       nil -> {:ok, nil}
@@ -801,6 +822,7 @@ defmodule Ecto.Type do
     case Decimal.parse(term) do
       {:ok, decimal} -> check_decimal(decimal, false)
       {decimal, ""} -> check_decimal(decimal, false)
+      {_, remainder} when is_binary(remainder) and byte_size(remainder) > 0 -> :error
       :error -> :error
     end
   end
@@ -1171,50 +1193,19 @@ defmodule Ecto.Type do
   defp of_base_type?(:date, value), do: Kernel.match?(%Date{}, value)
   defp of_base_type?(_, _), do: false
 
-  defp array([h | t], fun, acc) do
+  defp array([nil | t], fun, true, acc) do
+    array(t, fun, true, [nil | acc])
+  end
+
+  defp array([h | t], fun, skip_nil?, acc) do
     case fun.(h) do
-      {:ok, h} -> array(t, fun, [h | acc])
+      {:ok, h} -> array(t, fun, skip_nil?, [h | acc])
       :error -> :error
       {:error, _custom_errors} -> :error
     end
   end
 
-  defp array([], _fun, acc) do
-    {:ok, Enum.reverse(acc)}
-  end
-
-  defp array(_, _, _) do
-    :error
-  end
-
-  defp map(map, fun, acc) when is_map(map) do
-    map_each(Map.to_list(map), fun, acc)
-  end
-
-  defp map(_, _, _) do
-    :error
-  end
-
-  defp map_each([{key, value} | t], fun, acc) do
-    case fun.(value) do
-      {:ok, value} -> map_each(t, fun, Map.put(acc, key, value))
-      :error -> :error
-      {:error, _custom_errors} -> :error
-    end
-  end
-
-  defp map_each([], _fun, acc) do
-    {:ok, acc}
-  end
-
-  defp array([h | t], type, fun, acc) do
-    case fun.(type, h) do
-      {:ok, h} -> array(t, type, fun, [h | acc])
-      :error -> :error
-    end
-  end
-
-  defp array([], _type, _fun, acc) do
+  defp array([], _fun, _skip_nil?,acc) do
     {:ok, Enum.reverse(acc)}
   end
 
@@ -1222,22 +1213,65 @@ defmodule Ecto.Type do
     :error
   end
 
-  defp map(map, type, fun, acc) when is_map(map) do
-    map_each(Map.to_list(map), type, fun, acc)
+  defp map(map, fun, skip_nil?, acc) when is_map(map) do
+    map_each(Map.to_list(map), fun, skip_nil?, acc)
   end
 
   defp map(_, _, _, _) do
     :error
   end
 
-  defp map_each([{key, value} | t], type, fun, acc) do
-    case fun.(type, value) do
-      {:ok, value} -> map_each(t, type, fun, Map.put(acc, key, value))
+  defp map_each([{key, nil} | t], fun, true, acc) do
+    map_each(t, fun, true, Map.put(acc, key, nil))
+  end
+
+  defp map_each([{key, value} | t], fun, skip_nil?, acc) do
+    case fun.(value) do
+      {:ok, value} -> map_each(t, fun, skip_nil?, Map.put(acc, key, value))
+      :error -> :error
+      {:error, _custom_errors} -> :error
+    end
+  end
+
+  defp map_each([], _fun, _skip_nil?, acc) do
+    {:ok, acc}
+  end
+
+  defp array([nil | t], type, fun, true, acc) do
+    array(t, type, fun, true, [nil | acc])
+  end
+
+  defp array([h | t], type, fun, skip_nil?, acc) do
+    case fun.(type, h) do
+      {:ok, h} -> array(t, type, fun, skip_nil?, [h | acc])
       :error -> :error
     end
   end
 
-  defp map_each([], _type, _fun, acc) do
+  defp array([], _type, _fun, _skip_nil?, acc) do
+    {:ok, Enum.reverse(acc)}
+  end
+
+  defp array(_, _, _, _, _) do
+    :error
+  end
+
+  defp map(map, type, fun, skip_nil?, acc) when is_map(map) do
+    map_each(Map.to_list(map), type, fun, skip_nil?, acc)
+  end
+
+  defp map(_, _, _, _, _) do
+    :error
+  end
+
+  defp map_each([{key, value} | t], type, fun, skip_nil?, acc) do
+    case fun.(type, value) do
+      {:ok, value} -> map_each(t, type, fun, skip_nil?, Map.put(acc, key, value))
+      :error -> :error
+    end
+  end
+
+  defp map_each([], _type, _fun, _skip_nil?, acc) do
     {:ok, acc}
   end
 

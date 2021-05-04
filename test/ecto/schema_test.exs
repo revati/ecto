@@ -365,6 +365,28 @@ defmodule Ecto.SchemaTest do
     end
   end
 
+  test "default of invalid type" do
+    assert_raise ArgumentError, ~s/value "1" is invalid for type :integer, can't set default/, fn ->
+      defmodule SchemaInvalidDefault do
+        use Ecto.Schema
+
+        schema "invalid_default" do
+          field :count, :integer, default: "1"
+        end
+      end
+    end
+
+    assert_raise ArgumentError, ~s/value 1 is invalid for type :string, can't set default/, fn ->
+      defmodule SchemaInvalidDefault do
+        use Ecto.Schema
+
+        schema "invalid_default" do
+          field :count, :string, default: 1
+        end
+      end
+    end
+  end
+
   test "invalid field type" do
     assert_raise ArgumentError, "invalid or unknown type {:apa} for field :name", fn ->
       defmodule SchemaInvalidFieldType do
@@ -468,6 +490,14 @@ defmodule Ecto.SchemaTest do
 
   ## Associations
 
+  defmodule SchemaWithParameterizedPrimaryKey do
+    use Ecto.Schema
+
+    @primary_key {:id, ParameterizedPrefixedString, prefix: "ref", autogenerate: false}
+    schema "references" do
+    end
+  end
+
   defmodule AssocSchema do
     use Ecto.Schema
 
@@ -480,12 +510,13 @@ defmodule Ecto.SchemaTest do
       has_many :emails, {"users_emails", Email}, on_replace: :delete
       has_one :profile, {"users_profiles", Profile}
       belongs_to :summary, {"post_summary", Summary}
+      belongs_to :reference, SchemaWithParameterizedPrimaryKey, type: ParameterizedPrefixedString, prefix: "ref"
     end
   end
 
   test "associations" do
     assert AssocSchema.__schema__(:association, :not_a_field) == nil
-    assert AssocSchema.__schema__(:fields) == [:id, :comment_id, :summary_id]
+    assert AssocSchema.__schema__(:fields) == [:id, :comment_id, :summary_id, :reference_id]
   end
 
   test "has_many association" do
@@ -594,6 +625,20 @@ defmodule Ecto.SchemaTest do
     comment = (%AssocSchema{}).comment
     assert %Ecto.Association.NotLoaded{} = comment
     assert inspect(comment) == "#Ecto.Association.NotLoaded<association :comment is not loaded>"
+  end
+
+  test "belongs_to association via Ecto.ParameterizedType" do
+    struct =
+      %Ecto.Association.BelongsTo{field: :reference, owner: AssocSchema, cardinality: :one,
+       related: SchemaWithParameterizedPrimaryKey, owner_key: :reference_id, related_key: :id, queryable: SchemaWithParameterizedPrimaryKey,
+       on_replace: :raise, defaults: []}
+
+    assert AssocSchema.__schema__(:association, :reference) == struct
+    assert AssocSchema.__changeset__().reference == {:assoc, struct}
+
+    reference = (%AssocSchema{}).reference
+    assert %Ecto.Association.NotLoaded{} = reference
+    assert inspect(reference) == "#Ecto.Association.NotLoaded<association :reference is not loaded>"
   end
 
   defmodule CustomAssocSchema do
@@ -734,7 +779,7 @@ defmodule Ecto.SchemaTest do
     end
   end
 
-  test "defining schema twice will result with meaningfull error" do
+  test "defining schema twice will result with meaningful error" do
     quoted = """
     defmodule DoubleSchema do
       use Ecto.Schema
@@ -752,6 +797,87 @@ defmodule Ecto.SchemaTest do
 
     assert_raise RuntimeError, message, fn ->
       Code.compile_string(quoted, "example.ex")
+    end
+  end
+
+  describe "type :any" do
+    test "raises on non-virtual" do
+      assert_raise ArgumentError, ~r"only virtual fields can have type :any", fn ->
+        defmodule FieldAny do
+          use Ecto.Schema
+
+          schema "anything" do
+            field :json, :any
+          end
+        end
+      end
+    end
+
+    defmodule FieldAnyVirtual do
+      use Ecto.Schema
+
+      schema "anything" do
+        field :json, :any, virtual: true
+      end
+    end
+
+    test "is allowed if virtual" do
+      assert %{json: :any} = FieldAnyVirtual.__changeset__()
+    end
+
+    defmodule FieldAnyNested do
+      use Ecto.Schema
+
+      schema "anything" do
+        field :json, {:array, :any}
+      end
+    end
+
+    test "is allowed if nested" do
+      assert %{json: {:array, :any}} = FieldAnyNested.__changeset__()
+    end
+  end
+
+  describe "preload_order option" do
+    test "invalid option" do
+      message = "expected `:preload_order` for :posts to be a keyword list or a list of atoms/fields, got: `:title`"
+      assert_raise ArgumentError, message, fn ->
+        defmodule ThroughMatch do
+          use Ecto.Schema
+
+          schema "assoc" do
+            has_many :posts, Post, preload_order: :title
+          end
+        end
+      end
+    end
+
+    test "invalid direction" do
+      message = "expected `:preload_order` for :posts to be a keyword list or a list of atoms/fields, " <>
+                  "got: `[invalid_direction: :title]`, `:invalid_direction` is not a valid direction"
+      assert_raise ArgumentError, message, fn ->
+        defmodule ThroughMatch do
+          use Ecto.Schema
+
+          schema "assoc" do
+            has_many :posts, Post, preload_order: [invalid_direction: :title]
+          end
+        end
+      end
+    end
+
+    test "invalid item" do
+      message = "expected `:preload_order` for :posts to be a keyword list or a list of atoms/fields, " <>
+                  "got: `[\"text\"]`, `\"text\"` is not valid"
+      assert_raise ArgumentError, message, fn ->
+        defmodule ThroughMatch do
+          use Ecto.Schema
+
+          schema "assoc" do
+            has_many :posts, Post, preload_order: ["text"]
+          end
+        end
+      end
     end
   end
 end

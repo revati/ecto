@@ -87,6 +87,15 @@ defmodule Ecto.MultiTest do
     assert multi.operations == [{:comment, {:changeset, %{changeset | action: :insert}, []}}]
   end
 
+  test "inspect prints the multi state and return the base multi" do
+    multi =
+      Multi.new()
+      |> Multi.inspect()
+
+    assert multi.names == MapSet.new([])
+    assert multi.operations == [{:inspect, {:inspect, []}}]
+  end
+
   test "insert_or_update changeset will update the changeset if it was loaded" do
     changeset = Changeset.change(%Comment{id: 1}, x: 2)
     changeset = put_in(changeset.data.__meta__.state, :loaded)
@@ -327,6 +336,18 @@ defmodule Ecto.MultiTest do
     ] = Ecto.Multi.to_list(multi)
   end
 
+  test "put" do
+    name = :halo
+    value = "statue"
+
+    multi =
+      Multi.new()
+      |> Multi.put(name, value)
+
+    assert multi.names == MapSet.new([name])
+    assert multi.operations == [{name, {:put, value}}]
+  end
+
   test "add changeset with invalid action" do
     changeset = %{Changeset.change(%Comment{}) | action: :invalid}
 
@@ -436,8 +457,9 @@ defmodule Ecto.MultiTest do
       changeset = Changeset.change(%Comment{id: 1}, x: 1)
       multi =
         Multi.new()
+        |> Multi.put(:put, 1)
         |> Multi.insert(:insert, changeset)
-        |> Multi.run(:run, fn _repo, changes -> {:ok, changes} end)
+        |> Multi.run(:run, fn _repo, %{put: 1} = changes -> {:ok, changes} end)
         |> Multi.update(:update, changeset)
         |> Multi.update(:update_fun, fn _changes -> changeset end)
         |> Multi.delete(:delete, changeset)
@@ -466,6 +488,24 @@ defmodule Ecto.MultiTest do
       assert {1, nil}   = changes.delete_all
       assert Map.has_key?(changes.run, :insert)
       refute Map.has_key?(changes.run, :update)
+    end
+
+    test "with inspect" do
+      import ExUnit.CaptureIO
+
+      multi =
+        Multi.new()
+        |> Multi.inspect()
+        |> Multi.put(:put, 1)
+        |> Multi.put(:put2, 1)
+        |> Multi.inspect(only: [:put])
+        |> Multi.inspect(only: :put2)
+
+      assert capture_io(fn ->
+        assert {:ok, result} = TestRepo.transaction(multi)
+        refute Map.has_key?(result, :before_put)
+        refute Map.has_key?(result, :after_put)
+      end) == "%{}\n%{put: 1}\n%{put2: 1}\n"
     end
 
     test "with empty multi" do

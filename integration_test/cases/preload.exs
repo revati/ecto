@@ -38,9 +38,21 @@ defmodule Ecto.Integration.PreloadTest do
     assert %Ecto.Association.NotLoaded{} = p1.comments
 
     [p3, p1, p2] = TestRepo.preload([p3, p1, p2], :comments)
-    assert [%Comment{id: ^cid1}, %Comment{id: ^cid2}] = p1.comments |> sort_by_id
-    assert [%Comment{id: ^cid3}, %Comment{id: ^cid4}] = p2.comments |> sort_by_id
+    assert [%Comment{id: ^cid1}, %Comment{id: ^cid2}] = p1.comments |> sort_by_id()
+    assert [%Comment{id: ^cid3}, %Comment{id: ^cid4}] = p2.comments |> sort_by_id()
     assert [] = p3.comments
+  end
+
+  test "preload has_many multiple times" do
+    p1 = TestRepo.insert!(%Post{title: "1"})
+    %Comment{id: cid1} = TestRepo.insert!(%Comment{text: "1", post_id: p1.id})
+    %Comment{id: cid2} = TestRepo.insert!(%Comment{text: "2", post_id: p1.id})
+
+    [p1, p1] = TestRepo.preload([p1, p1], :comments)
+    assert [%Comment{id: ^cid1}, %Comment{id: ^cid2}] = p1.comments |> sort_by_id()
+
+    [p1, p1] = TestRepo.preload([p1, p1], :comments)
+    assert [%Comment{id: ^cid1}, %Comment{id: ^cid2}] = p1.comments |> sort_by_id()
   end
 
   test "preload has_one" do
@@ -77,7 +89,18 @@ defmodule Ecto.Integration.PreloadTest do
     assert %Post{id: ^pid3} = pl3.post
   end
 
-  test "preload belongs_to with shared assocs" do
+  test "preload multiple belongs_to" do
+    %User{id: uid} = TestRepo.insert!(%User{name: "foo"})
+    %Post{id: pid} = TestRepo.insert!(%Post{title: "1"})
+    %Comment{id: cid} = TestRepo.insert!(%Comment{post_id: pid, author_id: uid})
+
+    comment = TestRepo.get!(Comment, cid)
+    comment = TestRepo.preload(comment, [:author, :post])
+    assert comment.author.id == uid
+    assert comment.post.id == pid
+  end
+
+  test "preload belongs_to with shared parent" do
     %Post{id: pid1} = TestRepo.insert!(%Post{title: "1"})
     %Post{id: pid2} = TestRepo.insert!(%Post{title: "2"})
 
@@ -527,6 +550,21 @@ defmodule Ecto.Integration.PreloadTest do
     assert p1.id == c2.post.id
     assert p2.id == c3.post.id
     assert p2.id == c4.post.id
+  end
+
+  test "custom preload_order" do
+    post = TestRepo.insert!(%Post{users: [%User{name: "bar"}, %User{name: "foo"}], title: "1"})
+
+    TestRepo.insert!(%Comment{text: "2", post_id: post.id})
+    TestRepo.insert!(%Comment{text: "1", post_id: post.id})
+
+    post = TestRepo.preload(post, [:ordered_comments, :ordered_users])
+
+    # asc
+    assert [%{text: "1"}, %{text: "2"}] = post.ordered_comments
+
+    # desc
+    assert [%{name: "foo"}, %{name: "bar"}] = post.ordered_users
   end
 
   ## Others

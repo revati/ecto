@@ -8,7 +8,7 @@ defmodule Ecto.Query.Planner do
     raise "Ecto.Query match out of date in builder"
   end
 
-  @parent_as 0
+  @parent_as __MODULE__
 
   @doc """
   Converts a query to a list of joins.
@@ -214,8 +214,14 @@ defmodule Ecto.Query.Planner do
   Prepare all sources, by traversing and expanding from, joins, subqueries.
   """
   def plan_sources(query, adapter) do
-    {from, sources} = plan_from(query, adapter)
-    {joins, sources, tail_sources} = plan_joins(query, sources, length(query.joins), adapter)
+    {from, source} = plan_from(query, adapter)
+
+    # Set up the initial source so we can refer
+    # to the parent in subqueries in joins
+    query = %{query | sources: {source}}
+
+    {joins, sources, tail_sources} = plan_joins(query, [source], length(query.joins), adapter)
+
     %{query | from: from,
               joins: joins |> Enum.reverse,
               sources: (tail_sources ++ sources) |> Enum.reverse |> List.to_tuple()}
@@ -226,8 +232,7 @@ defmodule Ecto.Query.Planner do
   end
 
   defp plan_from(%{from: from} = query, adapter) do
-    {from, source} = plan_source(query, from, adapter)
-    {from, [source]}
+    plan_source(query, from, adapter)
   end
 
   defp plan_source(query, %{source: %Ecto.SubQuery{} = subquery, prefix: prefix} = expr, adapter) do
@@ -254,7 +259,13 @@ defmodule Ecto.Query.Planner do
 
   defp plan_subquery(subquery, query, prefix, adapter, source?) do
     %{query: inner_query} = subquery
-    inner_query = %{inner_query | prefix: prefix || subquery.query.prefix || query.prefix}
+
+    inner_query = %{
+      inner_query
+      | prefix: prefix || subquery.query.prefix || query.prefix,
+        aliases: Map.put(inner_query.aliases, @parent_as, query)
+    }
+
     {inner_query, params, key} = plan(inner_query, :all, adapter)
     assert_no_subquery_assocs!(inner_query)
 
@@ -263,6 +274,7 @@ defmodule Ecto.Query.Planner do
       |> ensure_select(true)
       |> normalize_subquery_select(adapter, source?)
 
+    {_, inner_query} = pop_in(inner_query.aliases[@parent_as])
     %{subquery | query: inner_query, params: params, cache: key, select: select}
   rescue
     e -> raise Ecto.SubQueryError, query: query, exception: e
@@ -287,8 +299,15 @@ defmodule Ecto.Query.Planner do
   defp normalize_subquery_select(query, adapter, source?) do
     {expr, %{select: select} = query} = rewrite_subquery_select_expr(query, source?)
     {expr, _} = prewalk(expr, :select, query, select, 0, adapter)
-    {meta, _fields, _from} = collect_fields(expr, [], :error, query, select.take, true)
+    {meta, _fields, _from} = collect_fields(expr, [], :never, query, select.take, true)
     {query, meta}
+  end
+
+  # If we are selecting a source, we keep it as is.
+  # Otherwise we normalize the select, which converts them into structs.
+  # This means that `select: p` in subqueries will be nullable in a join.
+  defp rewrite_subquery_select_expr(%{select: %{expr: {:&, _, [_]} = expr}} = query, _source?) do
+    {expr, query}
   end
 
   defp rewrite_subquery_select_expr(%{select: select} = query, source?) do
@@ -378,8 +397,17 @@ defmodule Ecto.Query.Planner do
     end
   end
 
-  defp subquery_types({:map, types}), do: types
-  defp subquery_types({:struct, _name, types}), do: types
+  defp subquery_type_for({:source, _, _, fields}, field), do: Keyword.fetch(fields, field)
+  defp subquery_type_for({:struct, _name, types}, field), do: subquery_type_for_value(types, field)
+  defp subquery_type_for({:map, types}, field), do: subquery_type_for_value(types, field)
+
+  defp subquery_type_for_value(types, field) do
+    case Keyword.fetch(types, field) do
+      {:ok, {:value, type}} -> {:ok, type}
+      {:ok, _} -> {:ok, :any}
+      :error -> :error
+    end
+  end
 
   defp assert_subquery_fields!(query, expr, pairs) do
     Enum.each(pairs, fn
@@ -406,7 +434,8 @@ defmodule Ecto.Query.Planner do
 
   defp plan_joins([%JoinExpr{assoc: {ix, assoc}, qual: qual, on: on, prefix: prefix} = join|t],
                      query, joins, sources, tail_sources, counter, offset, adapter) do
-    schema = schema_for_association_join!(query, join, Enum.fetch!(Enum.reverse(sources), ix))
+    source = fetch_source!(sources, ix)
+    schema = schema_for_association_join!(query, join, source)
     refl = schema.__schema__(:association, assoc)
 
     unless refl do
@@ -539,6 +568,17 @@ defmodule Ecto.Query.Planner do
 
   defp rewrite_param_ix(param, _, _, _, _), do: param
 
+  defp fetch_source!(sources, ix) when is_integer(ix) do
+    case Enum.reverse(sources) |> Enum.fetch(ix) do
+      {:ok, source} -> source
+      :error -> raise ArgumentError, "could not find a source with index `#{ix}` in `#{inspect sources}"
+    end
+  end
+
+  defp fetch_source!(_, ix) do
+    raise ArgumentError, "invalid binding index: `#{inspect ix}` (check if you're binding using a valid :as atom)"
+  end
+
   defp schema_for_association_join!(query, join, source) do
     case source do
       {:fragment, _, _} ->
@@ -549,6 +589,9 @@ defmodule Ecto.Query.Planner do
                               "because it does not have a schema"
 
       {_, schema, _} ->
+        schema
+
+      %Ecto.SubQuery{select: {:source, {_, schema}, _, _}} ->
         schema
 
       %Ecto.SubQuery{select: {:struct, schema, _}} ->
@@ -715,6 +758,7 @@ defmodule Ecto.Query.Planner do
 
   defp finalize_cache(query, operation, cache) do
     %{assocs: assocs, prefix: prefix, lock: lock, select: select, aliases: aliases} = query
+    aliases = Map.delete(aliases, @parent_as)
 
     cache =
       case select do
@@ -840,9 +884,6 @@ defmodule Ecto.Query.Planner do
     put_in(query.with_ctes.queries, queries)
   end
 
-  defp attach_prefix(%{prefix: nil} = query, %{prefix: prefix}), do: %{query | prefix: prefix}
-  defp attach_prefix(query, _), do: query
-
   defp find_source_expr(query, 0) do
     query.from
   end
@@ -898,7 +939,8 @@ defmodule Ecto.Query.Planner do
     case operation do
       :all ->
         assert_no_update!(query, operation)
-        assert_valid_combinations!(query)
+      :insert_all ->
+        assert_no_update!(query, operation)
       :update_all ->
         assert_update!(query, operation)
         assert_only_filter_expressions!(query, operation)
@@ -952,11 +994,17 @@ defmodule Ecto.Query.Planner do
     {queries, counter} =
       Enum.reduce with_expr.queries, {[], counter}, fn
         {name, %Ecto.Query{} = query}, {queries, counter} ->
+          # We don't want to use normalize_subquery_select because we are
+          # going to prepare the whole query ourselves next.
+          {_, query} = rewrite_subquery_select_expr(query, true)
           {query, counter} = traverse_exprs(query, :all, counter, fun)
-          {_expr, query} = rewrite_subquery_select_expr(query, true)
-          {query, select} = normalize_select(query, true)
-          keys = select.postprocess |> subquery_types() |> Keyword.keys()
-          query = update_in(query.select.fields, &Enum.zip(keys, &1))
+
+          # Now compute the fields as keyword lists so we emit AS in Ecto query.
+          %{select: %{expr: expr, take: take}} = query
+          {source, fields, _from} = collect_fields(expr, [], :never, query, take, true)
+          {_, keys} = subquery_struct_and_fields(source)
+          query = put_in(query.select.fields, Enum.zip(keys, Enum.reverse(fields)))
+
           {[{name, query} | queries], counter}
 
         {name, %QueryExpr{expr: {:fragment, _, _} = fragment} = query_expr}, {queries, counter} ->
@@ -1042,7 +1090,7 @@ defmodule Ecto.Query.Planner do
           inner_query
         else
           update_in(inner_query.select.fields, fn fields ->
-            subquery.select |> subquery_types() |> Keyword.keys() |> Enum.zip(fields)
+            subquery.select |> subquery_struct_and_fields() |> elem(1) |> Enum.zip(fields)
           end)
         end
 
@@ -1093,9 +1141,30 @@ defmodule Ecto.Query.Planner do
     {{:in, in_meta, [left, right]}, acc}
   end
 
+  defp prewalk({quantifier, meta, [{:subquery, i}]}, kind, query, expr, acc, adapter) when quantifier in [:exists, :any, :all] do
+    subquery = Enum.fetch!(expr.subqueries, i)
+    {subquery, acc} = prewalk_source(subquery, kind, query, expr, acc, adapter)
+
+    case {quantifier, subquery.query.select.fields} do
+      {:exists, _} ->
+        :ok
+
+      {_, [_]} ->
+        :ok
+
+      _ ->
+        error!(
+          query,
+          "subquery must return a single field in order to be used with #{quantifier}"
+        )
+    end
+
+    {{quantifier, meta, [subquery]}, acc}
+  end
+
   defp prewalk({{:., dot_meta, [left, field]}, meta, []},
                kind, query, expr, acc, _adapter) do
-    {ix, ix_expr, ix_query} = get_ix!(left, query)
+    {ix, ix_expr, ix_query} = get_ix!(left, kind, query)
     extra = if kind == :select, do: [type: type!(kind, ix_query, expr, ix, field)], else: []
     field = field_source(get_source!(kind, ix_query, ix), field)
     {{{:., extra ++ dot_meta, [ix_expr, field]}, meta, []}, acc}
@@ -1217,7 +1286,7 @@ defmodule Ecto.Query.Planner do
       end
 
     {postprocess, fields, from} =
-      collect_fields(expr, [], :error, query, take, keep_literals?)
+      collect_fields(expr, [], :none, query, take, keep_literals?)
 
     {fields, preprocess, from} =
       case from do
@@ -1227,10 +1296,10 @@ defmodule Ecto.Query.Planner do
           preprocess = [from_pre | Enum.reverse(assoc_exprs)]
           {fields, preprocess, {from_tag, from_expr}}
 
-        :error when preloads != [] or assocs != [] ->
+        :none when preloads != [] or assocs != [] ->
           error! query, "the binding used in `from` must be selected in `select` when using `preload`"
 
-        :error ->
+        :none ->
           {Enum.reverse(fields), [], :none}
       end
 
@@ -1247,7 +1316,7 @@ defmodule Ecto.Query.Planner do
 
   # Handling of source
 
-  defp collect_fields({:merge, _, [{:&, _, [0]}, right]}, fields, :error, query, take, keep_literals?) do
+  defp collect_fields({:merge, _, [{:&, _, [0]}, right]}, fields, :none, query, take, keep_literals?) do
     {expr, taken} = source_take!(:select, query, take, 0, 0)
     from = {:ok, {:source, :from}, expr, taken}
 
@@ -1257,12 +1326,13 @@ defmodule Ecto.Query.Planner do
     {{:source, :from}, fields, from}
   end
 
-  defp collect_fields({:&, _, [0]}, fields, :error, query, take, _keep_literals?) do
+  defp collect_fields({:&, _, [0]}, fields, :none, query, take, _keep_literals?) do
     {expr, taken} = source_take!(:select, query, take, 0, 0)
     {{:source, :from}, fields, {:ok, {:source, :from}, expr, taken}}
   end
 
-  defp collect_fields({:&, _, [0]}, fields, from, _query, _take, _keep_literals?) do
+  defp collect_fields({:&, _, [0]}, fields, from, _query, _take, _keep_literals?)
+       when from != :never do
     {{:source, :from}, fields, from}
   end
 
@@ -1396,6 +1466,10 @@ defmodule Ecto.Query.Planner do
     {{:value, :boolean}, [expr | fields], from}
   end
 
+  defp collect_fields(nil, fields, from, _query, _take, true) do
+    {{:value, :any}, [nil | fields], from}
+  end
+
   defp collect_fields(expr, fields, from, _query, _take, _keep_literals?) when is_atom(expr) do
     {expr, fields, from}
   end
@@ -1484,9 +1558,11 @@ defmodule Ecto.Query.Planner do
 
   defp take!(source, query, fetched, field, ix) do
     case {fetched, source} do
-      {{:ok, {_, _}}, {:fragment, _, _}} ->
-        error! query, "it is not possible to return a map/struct subset of a fragment, " <>
-                      "you must explicitly return the desired individual fields"
+      {{:ok, {:struct, _}}, {:fragment, _, _}} ->
+        error! query, "it is not possible to return a struct subset of a fragment"
+
+      {{:ok, {:struct, _}}, %Ecto.SubQuery{}} ->
+        error! query, "it is not possible to return a struct subset of a subquery"
 
       {{:ok, {_, []}}, {_, _, _}} ->
         error! query, "at least one field must be selected for binding `#{field}`, got an empty list"
@@ -1494,15 +1570,14 @@ defmodule Ecto.Query.Planner do
       {{:ok, {:struct, _}}, {_, nil, _}} ->
         error! query, "struct/2 in select expects a source with a schema"
 
-      {{:ok, {kind, fields}}, {source, schema, prefix}} ->
+      {{:ok, {kind, fields}}, {source, schema, prefix}} when is_binary(source) ->
         dumper = if schema, do: schema.__schema__(:dump), else: %{}
         schema = if kind == :map, do: nil, else: schema
         {types, fields} = select_dump(List.wrap(fields), dumper, ix)
         {{:source, {source, schema}, prefix || query.prefix, types}, fields}
 
-      {{:ok, {_, _}}, %Ecto.SubQuery{}} ->
-        error! query, "it is not possible to return a map/struct subset of a subquery, " <>
-                      "you must explicitly select the whole subquery or individual fields only"
+      {{:ok, {_, fields}}, _} ->
+        {{:map, Enum.map(fields, &{&1, {:value, :any}})}, Enum.map(fields, &select_field(&1, ix))}
 
       {:error, {:fragment, _, _}} ->
         {{:value, :map}, [{:&, [], [ix]}]}
@@ -1515,8 +1590,8 @@ defmodule Ecto.Query.Planner do
         {{:source, {source, schema}, prefix || query.prefix, types}, fields}
 
       {:error, %Ecto.SubQuery{select: select}} ->
-        fields = for {field, _} <- subquery_types(select), do: select_field(field, ix)
-        {select, fields}
+        {_, fields} = subquery_struct_and_fields(select)
+        {select, Enum.map(fields, &select_field(&1, ix))}
     end
   end
 
@@ -1536,22 +1611,31 @@ defmodule Ecto.Query.Planner do
     {{:., [], [{:&, [], [ix]}, field]}, [], []}
   end
 
-  defp get_ix!({:&, _, [ix]} = expr, query) do
+  defp get_ix!({:&, _, [ix]} = expr, _kind, query) do
     {ix, expr, query}
   end
 
-  defp get_ix!({:as, meta, [as]}, query) do
+  defp get_ix!({:as, meta, [as]}, _kind, query) do
     case query.aliases do
       %{^as => ix} -> {ix, {:&, meta, [ix]}, query}
       %{} -> error!(query, "could not find named binding `as(#{inspect(as)})`")
     end
   end
 
-  defp get_ix!({:parent_as, meta, [as]}, query) do
+  defp get_ix!({:parent_as, meta, [as]}, kind, query) do
     case query.aliases[@parent_as] do
-      %{aliases: %{^as => ix}} = query -> {ix, {:parent_as, [], [{:&, meta, [ix]}]}, query}
-      %{} -> error!(query, "could not find named binding `parent_as(#{inspect(as)})`")
-      nil -> error!(query, "`parent_as(#{inspect(as)})` can only be used in subqueries")
+      %{aliases: %{^as => ix}, sources: sources} = query ->
+        if kind == :select and not (ix < tuple_size(sources)) do
+          error!(query, "the parent_as in a subquery select used as a join can only access the `from` binding")
+        else
+          {ix, {:parent_as, [], [{:&, meta, [ix]}]}, query}
+        end
+
+      %{} = parent ->
+        get_ix!({:parent_as, meta, [as]}, kind, parent)
+
+      nil ->
+        error!(query, "could not find named binding `parent_as(#{inspect(as)})`")
     end
   end
 
@@ -1573,6 +1657,15 @@ defmodule Ecto.Query.Planner do
     end
   end
 
+  @doc """
+  Puts the prefix given via `opts` into the given query, if available.
+  """
+  def attach_prefix(query, opts) when is_list(opts) do
+    attach_prefix(query, Map.new(opts))
+  end
+  def attach_prefix(%{prefix: nil} = query, %{prefix: prefix}), do: %{query | prefix: prefix}
+  def attach_prefix(query, _), do: query
+
   ## Helpers
 
   @all_exprs [with_cte: :with_ctes, distinct: :distinct, select: :select, from: :from, join: :joins,
@@ -1591,6 +1684,7 @@ defmodule Ecto.Query.Planner do
     exprs =
       case operation do
         :all -> @all_exprs
+        :insert_all -> @all_exprs
         :update_all -> @update_all_exprs
         :delete_all -> @delete_all_exprs
       end
@@ -1622,13 +1716,9 @@ defmodule Ecto.Query.Planner do
         type!(kind, query, expr, schema, field)
 
       %Ecto.SubQuery{select: select} ->
-        case Keyword.fetch(subquery_types(select), field) do
-          {:ok, {:value, type}} ->
-            type
-          {:ok, _} ->
-            :any
-          :error ->
-            error!(query, expr, "field `#{field}` does not exist in subquery")
+        case subquery_type_for(select, field) do
+          {:ok, type} -> type
+          :error -> error!(query, expr, "field `#{field}` does not exist in subquery")
         end
     end
   end
@@ -1722,33 +1812,6 @@ defmodule Ecto.Query.Planner do
         error! query, "`#{operation}` allows only `with_cte`, `where` and `join` expressions. " <>
                       "You can exclude unwanted expressions from a query by using " <>
                       "Ecto.Query.exclude/2. Error found"
-    end
-  end
-
-  defp assert_valid_combinations!(query) do
-    case query.combinations do
-      [] ->
-        :ok
-
-      [{kind, _} | _] ->
-        has_bindings? =
-          Enum.any?(query.order_bys, fn order_by ->
-            Enum.any?(order_by.expr, &match?({_dir, {{:., [], [{:&, [], [_]}, _]}, [], []}}, &1))
-          end)
-
-        if has_bindings? do
-          error! query, """
-          cannot use bindings in `order_by` when using `#{kind}`.
-
-          That's because the `order_by` applies to the whole `#{kind}` and not \
-          an individual query. If you really want to order the results, you can wrap \
-          the existing query in a subquery and then order it:
-
-              query = #{kind}(query1, ^query2)
-              from q in subquery(query), order_by: q.field
-
-          """
-        end
     end
   end
 

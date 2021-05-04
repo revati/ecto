@@ -1,7 +1,8 @@
 defmodule Ecto.MixProject do
   use Mix.Project
 
-  @version "3.5.0-rc.0"
+  @source_url "https://github.com/elixir-ecto/ecto"
+  @version "3.6.1"
 
   def project do
     [
@@ -42,7 +43,7 @@ defmodule Ecto.MixProject do
     [
       maintainers: ["Eric Meadows-Jönsson", "José Valim", "James Fish", "Michał Muskała"],
       licenses: ["Apache-2.0"],
-      links: %{"GitHub" => "https://github.com/elixir-ecto/ecto"},
+      links: %{"GitHub" => @source_url},
       files:
         ~w(.formatter.exs mix.exs README.md CHANGELOG.md lib) ++
           ~w(integration_test/cases integration_test/support)
@@ -56,7 +57,8 @@ defmodule Ecto.MixProject do
       canonical: "http://hexdocs.pm/ecto",
       logo: "guides/images/e.png",
       extra_section: "GUIDES",
-      source_url: "https://github.com/elixir-ecto/ecto",
+      source_url: @source_url,
+      skip_undefined_reference_warnings_on: ["CHANGELOG.md"],
       extras: extras(),
       groups_for_extras: groups_for_extras(),
       groups_for_modules: [
@@ -109,10 +111,13 @@ defmodule Ecto.MixProject do
       "guides/howtos/Data mapping and validation.md",
       "guides/howtos/Dynamic queries.md",
       "guides/howtos/Multi tenancy with query prefixes.md",
+      "guides/howtos/Multi tenancy with foreign keys.md",
+      "guides/howtos/Self-referencing many to many.md",
       "guides/howtos/Polymorphic associations with many to many.md",
       "guides/howtos/Replicas and dynamic repositories.md",
       "guides/howtos/Schemaless queries.md",
-      "guides/howtos/Test factories.md"
+      "guides/howtos/Test factories.md",
+      "CHANGELOG.md"
     ]
   end
 

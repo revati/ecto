@@ -220,6 +220,46 @@ defmodule Ecto.RepoTest do
     end
   end
 
+  describe "reload" do
+    test "raises when input structs do not have valid primary keys" do
+      message = "Ecto.Repo.reload/2 expects existent structs, found a `nil` primary key"
+      assert_raise ArgumentError, message, fn ->
+        TestRepo.reload(%MySchema{})
+      end
+    end
+
+    test "raises when input is not a struct or a list of structs" do
+      message = ~r"expected a struct or a list of structs,"
+      assert_raise ArgumentError, message, fn ->
+        TestRepo.reload(%{my_key: 1})
+      end
+
+      assert_raise ArgumentError, message, fn ->
+        TestRepo.reload([%{my_key: 1}, %{my_key: 2}])
+      end
+    end
+
+    test "raises when schema doesn't have a primary key" do
+      message = ~r"to have exactly one primary key"
+      assert_raise ArgumentError, message, fn ->
+        TestRepo.reload(%MySchemaNoPK{})
+      end
+    end
+
+    test "raises when receives multiple struct types" do
+      message = ~r"expected an homogenous list"
+      assert_raise ArgumentError, message, fn ->
+        TestRepo.reload([%MySchemaWithAssoc{id: 1}, %MySchema{id: 2}])
+      end
+    end
+
+    test "supports prefix" do
+      struct_with_prefix = put_meta(%MySchema{id: 2}, prefix: "another")
+      TestRepo.reload(struct_with_prefix)
+      assert_received {:all, %{prefix: "another"}}
+    end
+  end
+
   defmodule DefaultOptionRepo do
     use Ecto.Repo, otp_app: :ecto, adapter: Ecto.TestAdapter
 
@@ -245,6 +285,11 @@ defmodule Ecto.RepoTest do
 
       DefaultOptionRepo.delete_all(MySchema)
       assert_received {:delete_all, query}
+      assert query.prefix == "fallback_schema"
+
+      DefaultOptionRepo.preload(%MySchemaWithAssoc{parent_id: 1}, :parent)
+      assert_received {:all, query}
+      assert query.from.source == {"my_parent", Ecto.RepoTest.MyParent}
       assert query.prefix == "fallback_schema"
     end
   end
@@ -410,7 +455,7 @@ defmodule Ecto.RepoTest do
   end
 
   describe "insert_all" do
-    test "takes query" do
+    test "takes queries as values in rows" do
       import Ecto.Query
 
       value = "foo"
@@ -435,9 +480,77 @@ defmodule Ecto.RepoTest do
       assert [%{expr: {:==, _, [_, {:^, [], [7]}]}}] = query4x.wheres
     end
 
+    test "takes query as datasource" do
+      import Ecto.Query
+
+      threshold = "ten"
+
+      query = from s in MySchema,
+        where: s.x > ^threshold,
+        select: %{
+          foo: s.x,
+          bar: fragment("concat(?, ?, ?)", ^"one", ^"two", s.z)
+        }
+
+      TestRepo.insert_all(MySchema, query)
+
+      assert_received {:insert_all, %{source: "my_schema"}, {%Ecto.Query{}, params}}
+
+      assert ["one", "two", "ten"] = params
+    end
+
+    test "raises when a bad query is given as source" do
+      assert_raise ArgumentError, fn ->
+        TestRepo.insert_all(MySchema, from(s in MySchema))
+      end
+      assert_raise ArgumentError, fn ->
+        source = from s in MySchema,
+          select: s.x
+        TestRepo.insert_all(MySchema, source)
+      end
+    end
+
     test "raises when on associations" do
       assert_raise ArgumentError, fn ->
         TestRepo.insert_all MySchema, [%{another: nil}]
+      end
+    end
+  end
+
+  defmodule MySchemaWithBinaryId do
+    use Ecto.Schema
+
+    schema "my_schema_with_binary_id" do
+      field :bid, :binary_id
+      field :str, :string
+    end
+  end
+
+  describe "placeholders" do
+    @describetag :placeholders
+
+    test "Repo.insert_all throws when placeholder key is not found" do
+      assert_raise KeyError, fn ->
+        TestRepo.insert_all(MySchema, [%{x: {:placeholder, :bad_key}}], placeholders: %{foo: 100})
+      end
+    end
+
+    test "Repo.insert_all throws when placeholder key is used for different types" do
+      placeholders = %{uuid_key: Ecto.UUID.generate}
+      ph_key = {:placeholder, :uuid_key}
+      entries = [%{bid: ph_key, string: ph_key}]
+
+      assert_raise ArgumentError, fn ->
+        TestRepo.insert_all(MySchemaWithBinaryId, entries, placeholders: placeholders)
+      end
+    end
+
+    test "Repo.insert_all throws when placeholder key is used with invalid types" do
+      placeholders = %{string_key: "foo"}
+      entries = [%{n: {:placeholder, :string_key}}]
+
+      assert_raise Ecto.ChangeError, fn ->
+        TestRepo.insert_all(MyParent, entries, placeholders: placeholders)
       end
     end
   end
@@ -1135,32 +1248,22 @@ defmodule Ecto.RepoTest do
 
     test "replaces specified fields on replace" do
       fields = [:x, :yyy]
-      TestRepo.insert(
-        %MySchema{id: 1},
-        on_conflict: {:replace, [:x, :y]},
-        conflict_target: [:id]
-      )
-      assert_received {:insert, %{source: "my_schema", on_conflict: {^fields, [], [:id]}}}
+      TestRepo.insert(%MySchema{id: 1}, on_conflict: {:replace, [:x, :y]})
+      assert_received {:insert, %{source: "my_schema", on_conflict: {^fields, [], []}}}
     end
 
     test "replaces specified fields on replace without a schema" do
       fields = [:x, :yyy]
       rows = [[id: 1, x: "x", yyy: "yyy"]]
-      TestRepo.insert_all(
-        "my_schema",
-        rows,
-        on_conflict: {:replace, [:x, :yyy]},
-        conflict_target: [:id]
-      )
-      assert_received {:insert_all, %{source: "my_schema", on_conflict: {^fields, [], [:id]}}, ^rows}
+      TestRepo.insert_all("my_schema", rows, on_conflict: {:replace, [:x, :yyy]})
+      assert_received {:insert_all, %{source: "my_schema", on_conflict: {^fields, [], []}}, ^rows}
     end
 
     test "raises on non-existent fields on replace" do
       assert_raise ArgumentError, "unknown field for :on_conflict, got: :unknown", fn ->
         TestRepo.insert(
           %MySchema{id: 1},
-          on_conflict: {:replace, [:unknown]},
-          conflict_target: [:id]
+          on_conflict: {:replace, [:unknown]}
         )
       end
     end
@@ -1193,12 +1296,6 @@ defmodule Ecto.RepoTest do
     test "raises on non-empty conflict_target with on_conflict raise" do
       assert_raise ArgumentError, ":conflict_target option is forbidden when :on_conflict is :raise", fn ->
         TestRepo.insert(%MySchema{id: 1}, on_conflict: :raise, conflict_target: [:id])
-      end
-    end
-
-    test "raises on empty conflict_target with on_conflict replace" do
-      assert_raise ArgumentError, ":conflict_target option is required when :on_conflict is replace", fn ->
-        TestRepo.insert(%MySchema{id: 1}, on_conflict: {:replace, []})
       end
     end
 
@@ -1265,6 +1362,7 @@ defmodule Ecto.RepoTest do
       def loaders(_, _), do: raise "not implemented"
       def init(_), do: raise "not implemented"
       def checkout(_, _, _), do: raise "not implemented"
+      def checked_out?(_), do: raise "not implemented"
       def ensure_all_started(_, _), do: raise "not implemented"
     end
 
@@ -1384,6 +1482,12 @@ defmodule Ecto.RepoTest do
       PrepareRepo.stream(query, [hello: :world]) |> Enum.to_list()
       assert_received {:stream, ^query, [hello: :world]}
       assert_received {:stream, %{prefix: "rewritten"}}
+    end
+
+    test "preload" do
+      PrepareRepo.preload(%MySchemaWithAssoc{parent_id: 1}, :parent, [hello: :world])
+      assert_received {:all, query, [hello: :world]}
+      assert query.from.source == {"my_parent", Ecto.RepoTest.MyParent}
     end
   end
 

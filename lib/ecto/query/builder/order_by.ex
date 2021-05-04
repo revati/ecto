@@ -15,6 +15,23 @@ defmodule Ecto.Query.Builder.OrderBy do
   ]
 
   @doc """
+  Returns `true` if term is a valid order_by direction; otherwise returns `false`.
+
+  ## Examples
+
+      iex> valid_direction?(:asc)
+      true
+
+      iex> valid_direction?(:desc)
+      true
+
+      iex> valid_direction?(:invalid)
+      false
+
+  """
+  def valid_direction?(term), do: term in @directions
+
+  @doc """
   Escapes an order by query.
 
   The query is escaped to a list of `{direction, expression}`
@@ -129,8 +146,8 @@ defmodule Ecto.Query.Builder.OrderBy do
     apply(query, expr)
   end
 
-  defp dynamic_or_field!(_kind, %Ecto.Query.DynamicExpr{} = dynamic, query, {params, count}) do
-    {expr, params, count} = Builder.Dynamic.partially_expand(query, dynamic, params, count)
+  defp dynamic_or_field!(kind, %Ecto.Query.DynamicExpr{} = dynamic, query, {params, count}) do
+    {expr, params, count} = Builder.Dynamic.partially_expand(kind, query, dynamic, params, count)
     {expr, {params, count}}
   end
 

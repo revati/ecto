@@ -20,9 +20,19 @@ defmodule Ecto.TestAdapter do
     {:ok, Supervisor.child_spec({Task, fn -> :timer.sleep(:infinity) end}, []), %{meta: :meta}}
   end
 
-  def checkout(_mod, _opts, fun) do
+  def checkout(mod, _opts, fun) do
     send self(), {:checkout, fun}
-    fun.()
+    Process.put({mod, :checked_out?}, true)
+
+    try do
+      fun.()
+    after
+      Process.delete({mod, :checked_out?})
+    end
+  end
+
+  def checked_out?(mod) do
+    Process.get({mod, :checked_out?}) || false
   end
 
   ## Types
@@ -69,7 +79,7 @@ defmodule Ecto.TestAdapter do
 
   ## Schema
 
-  def insert_all(_, meta, header, rows, on_conflict, returning, _opts) do
+  def insert_all(_, meta, header, rows, on_conflict, returning, _placeholders, _opts) do
     meta = Map.merge(meta, %{header: header, on_conflict: on_conflict, returning: returning})
     send(self(), {:insert_all, meta, rows})
     {1, nil}

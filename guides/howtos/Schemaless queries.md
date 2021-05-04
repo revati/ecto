@@ -16,7 +16,7 @@ query =
 MyApp.Repo.all(query)
 ```
 
-Although you might use schemas for most of your queries, Ecto also adds the ability to write regular schemaless queries when prefered.
+Although you might use schemas for most of your queries, Ecto also adds the ability to write regular schemaless queries when preferred.
 
 One example is this ability to select all desired fields without duplication:
 
@@ -35,7 +35,7 @@ def update_title(post, new_title) do
       where: [id: ^post.id],
       update: [set: [title: ^new_title]]
 
-  MyApp.Repo.update_all(query)
+  MyApp.Repo.update_all(query, [])
 end
 ```
 
@@ -55,7 +55,7 @@ def increment_page_views(post) do
       where: [id: ^post.id],
       update: [inc: [page_views: 1]]
 
-  MyApp.Repo.update_all(query)
+  MyApp.Repo.update_all(query, [])
 end
 ```
 

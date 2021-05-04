@@ -16,7 +16,7 @@ defmodule Ecto.Repo.Preloader do
 
   def query(rows, repo_name, preloads, take, fun, opts) do
     rows
-    |> extract
+    |> extract()
     |> normalize_and_preload_each(repo_name, preloads, take, opts)
     |> unextract(rows, fun)
   end
@@ -121,14 +121,26 @@ defmodule Ecto.Repo.Preloader do
 
   # Then we execute queries in parallel
   defp maybe_pmap(preloaders, repo_name, opts) do
-    if match?([_,_|_], preloaders) and not Ecto.Repo.Transaction.in_transaction?(repo_name) and
+    if match?([_,_|_], preloaders) and not checked_out?(repo_name) and
          Keyword.get(opts, :in_parallel, true) do
+      # We pass caller: self() so the ownership pool knows where
+      # to fetch the connection from and set the proper timeouts.
+      # Note while the ownership pool uses '$callers' from pdict,
+      # it does not do so in automatic mode, hence this line is
+      # still necessary.
+      opts = Keyword.put_new(opts, :caller, self())
+
       preloaders
       |> Task.async_stream(&(&1.(opts)), timeout: :infinity)
       |> Enum.map(fn {:ok, assoc} -> assoc end)
     else
       Enum.map(preloaders, &(&1.(opts)))
     end
+  end
+
+  defp checked_out?(repo_name) do
+    {adapter, meta} = Ecto.Repo.Registry.lookup(repo_name)
+    adapter.checked_out?(meta)
   end
 
   # Then we unpack the query results, merge them, and preload recursively
@@ -175,15 +187,13 @@ defmodule Ecto.Repo.Preloader do
 
         cond do
           card == :one and loaded? ->
-            {fetch_ids, [id|loaded_ids], [value|loaded_structs]}
+            {fetch_ids, [id | loaded_ids], [value | loaded_structs]}
           card == :many and loaded? ->
-            {fetch_ids,
-             List.duplicate(id, length(value)) ++ loaded_ids,
-             value ++ loaded_structs}
+            {fetch_ids, [{id, length(value)} | loaded_ids], value ++ loaded_structs}
           is_nil(id) ->
             {fetch_ids, loaded_ids, loaded_structs}
           true ->
-            {[id|fetch_ids], loaded_ids, loaded_structs}
+            {[id | fetch_ids], loaded_ids, loaded_structs}
         end
     end
   end
@@ -214,7 +224,7 @@ defmodule Ecto.Repo.Preloader do
       case card do
         :many ->
           update_in query.order_bys, fn order_bys ->
-            [%Ecto.Query.QueryExpr{expr: [asc: field], params: [],
+            [%Ecto.Query.QueryExpr{expr: preload_order(assoc, query, field), params: [],
                                    file: __ENV__.file, line: __ENV__.line}|order_bys]
           end
         :one ->
@@ -267,6 +277,23 @@ defmodule Ecto.Repo.Preloader do
     We expected a tuple but we got: #{inspect(entry)}
     """
 
+  defp preload_order(assoc, query, related_field) do
+    custom_order_by = Enum.map(assoc.preload_order, fn
+      {direction, field} ->
+        {direction, related_key_to_field(query, {0, field})}
+      field ->
+        {:asc, related_key_to_field(query, {0, field})}
+    end)
+
+    [{:asc, related_field} | custom_order_by]
+  end
+
+  defp related_key_to_field(query, {pos, key, field_type}) do
+    field_ast = related_key_to_field(query, {pos, key})
+
+    {:type, [], [field_ast, field_type]}
+  end
+
   defp related_key_to_field(query, {pos, key}) do
     {{:., [], [{:&, [], [related_key_pos(query, pos)]}, key]}, [], []}
   end
@@ -297,6 +324,10 @@ defmodule Ecto.Repo.Preloader do
     map
   end
 
+  defp many_assoc_map([{id, n}|ids], structs, map) do
+    {acc, structs} = split_n(structs, n, [])
+    many_assoc_map(ids, structs, Map.put(map, id, acc))
+  end
   defp many_assoc_map([id|ids], [struct|structs], map) do
     {ids, structs, acc} = split_while(ids, structs, id, [struct])
     many_assoc_map(ids, structs, Map.put(map, id, acc))
@@ -304,6 +335,9 @@ defmodule Ecto.Repo.Preloader do
   defp many_assoc_map([], [], map) do
     map
   end
+
+  defp split_n(structs, 0, acc), do: {acc, structs}
+  defp split_n([struct | structs], n, acc), do: split_n(structs, n - 1, [struct | acc])
 
   defp split_while([id|ids], [struct|structs], id, acc),
     do: split_while(ids, structs, id, [struct|acc])

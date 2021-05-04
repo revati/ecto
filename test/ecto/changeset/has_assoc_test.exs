@@ -43,12 +43,13 @@ defmodule Ecto.Changeset.HasAssocTest do
         defaults: [name: "default"], on_replace: :delete
       has_one :raise_profile, Profile, on_replace: :raise
       has_one :nilify_profile, Profile, on_replace: :nilify
-      has_one :invalid_profile, Profile, on_replace: :mark_as_invalid
+      has_one :invalid_profile, Profile, on_replace: :mark_as_invalid,
+        defaults: :send_to_self
       has_one :update_profile, Profile, on_replace: :update,
         defaults: {__MODULE__, :send_to_self, [:extra]}
     end
 
-    def send_to_self(struct, owner, extra) do
+    def send_to_self(struct, owner, extra \\ :default) do
       send(self(), {:defaults, struct, owner, extra})
       %{struct | id: 13}
     end
@@ -342,6 +343,15 @@ defmodule Ecto.Changeset.HasAssocTest do
     assert changeset.changes.profile.changes == %{id: 2}
   end
 
+  test "cast has_one with atom defaults" do
+    {:ok, schema} = TestRepo.insert(%Author{title: "Title", invalid_profile: nil})
+
+    changeset = cast(schema, %{"invalid_profile" => %{name: "Jose"}}, :invalid_profile)
+    assert_received {:defaults, %Profile{id: nil}, %Author{title: "Title"}, :default}
+    assert changeset.changes.invalid_profile.data.id == 13
+    assert changeset.changes.invalid_profile.changes == %{name: "Jose"}
+  end
+
   test "cast has_one with MFA defaults" do
     {:ok, schema} = TestRepo.insert(%Author{title: "Title", update_profile: nil})
 
@@ -363,8 +373,8 @@ defmodule Ecto.Changeset.HasAssocTest do
   end
 
   test "raises when :update is used on has_many" do
-    error_message = "invalid `:on_replace` option for :tags. The only valid " <>
-      "options are: `:raise`, `:mark_as_invalid`, `:delete`, `:nilify`"
+    error_message = ~r"invalid `:on_replace` option for :tags. The only valid options are"
+
     assert_raise ArgumentError, error_message, fn ->
       defmodule Topic do
         use Ecto.Schema
@@ -907,14 +917,17 @@ defmodule Ecto.Changeset.HasAssocTest do
     changeset = Changeset.put_assoc(base_changeset, :profile, %{name: "michal"})
     assert %Ecto.Changeset{} = changeset.changes.profile
     assert changeset.changes.profile.action == :insert
+    assert changeset.changes.profile.data.__meta__.source == "users_profiles"
 
     changeset = Changeset.put_assoc(base_changeset, :profile, [name: "michal"])
     assert %Ecto.Changeset{} = changeset.changes.profile
     assert changeset.changes.profile.action == :insert
+    assert changeset.changes.profile.data.__meta__.source == "users_profiles"
 
     changeset = Changeset.put_assoc(base_changeset, :profile, %Profile{name: "michal"})
     assert %Ecto.Changeset{} = changeset.changes.profile
     assert changeset.changes.profile.action == :insert
+    assert changeset.changes.profile.data.__meta__.source == "profiles"
 
     base_changeset = Changeset.change(%Author{profile: %Profile{name: "michal"}})
     empty_update_changeset = Changeset.change(%Profile{name: "michal"})

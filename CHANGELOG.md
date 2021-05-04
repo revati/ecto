@@ -1,6 +1,119 @@
 # Changelog for v3.x
 
-## v3.5.0-rc.0 (2020-08-31)
+## v3.6.1 (2021-04-12)
+
+### Enhancements
+
+  * [Ecto.Changeset] Allow the `:query` option in `unsafe_validate_unique`
+
+### Bug fixes
+
+  * [Ecto.Changeset] Add the relation id in `apply_changes` if the relation key exists (instead of hardcoding it to `id`)
+
+## v3.6.0 (2021-04-03)
+
+### Enhancements
+
+  * [Ecto.Changeset] Support `:repo_opts` in `unsafe_validate_unique`
+  * [Ecto.Changeset] Add a validation error if trying to cast a cardinality one embed/assoc with anything other than a map or keyword list
+  * [Ecto.Enum] Allow enums to map to custom values
+  * [Ecto.Multi] Add `Ecto.Multi.put/3` for directly storing values
+  * [Ecto.Query] **Potentially breaking change**: optimize `many_to_many` queries so it no longer load intermediary tables in more occasions. This may cause issues if you are using `Ecto.assoc/2` to load `many_to_many` associations and then trying to access intermediate bindings (which is discouraged but it was possible)
+  * [Ecto.Repo] Allow `insert_all` to be called with a query instead of rows
+  * [Ecto.Repo] Add `:placeholders` support to `insert_all` to avoid sending the same value multiple times
+  * [Ecto.Schema] Support `:preload_order` on `has_many` and `many_to_many` associations
+  * [Ecto.UUID] Add bang UUID conversion methods
+  * [Ecto.Query] The `:hints` option now accepts dynamic values when supplied as tuples
+  * [Ecto.Query] Support `select: map(source, fields)` where `source` is a fragment
+  * [Ecto.Query] Allow referring to the parent query in a join's subquery select via `parent_as`
+  * [mix ecto] Support file and line interpolation on `ECTO_EDITOR`
+
+### Bug fixes
+
+  * [Ecto.Changeset] Change `apply_changes/1` to add the relation to the `struct.relation_id` if relation struct is persisted
+  * [Ecto.Query] Remove unnecessary INNER JOIN in many to many association query
+  * [Ecto.Query] Allow parametric types to be interpolated in queries
+  * [Ecto.Schema] Raise `ArgumentError` when default has invalid type
+
+## v3.5.8 (2021-02-21)
+
+### Enhancements
+
+  * [Ecto.Query] Support map/2 on fragments and subqueries
+
+## v3.5.7 (2021-02-07)
+
+### Bug fixes
+
+  * [Ecto.Query] Fixes param ordering issue on dynamic queries with subqueries
+
+## v3.5.6 (2021-01-20)
+
+### Enhancements
+
+  * [Ecto.Schema] Support `on_replace: :delete_if_exists` on associations
+
+### Bug fixes
+
+  * [Ecto.Query] Allow unary minus operator in query expressions
+  * [Ecto.Schema] Allow nil values on typed maps
+
+## v3.5.5 (2020-11-12)
+
+### Enhancements
+
+  * [Ecto.Query] Add support for subqueries operators: `all`, `any`, and `exists`
+
+### Bug fixes
+
+  * [Ecto.Changeset] Use association source on `put_assoc` with maps/keywords
+  * [Ecto.Enum] Add `cast` clause for nil values on `Ecto.Enum`
+  * [Ecto.Schema] Allow nested type `:any` for non-virtual fields
+
+## v3.5.4 (2020-10-28)
+
+### Enhancements
+
+  * [mix ecto.drop] Provide `--force-drop` for databases that may support it
+  * [guides] Add new "Multi tenancy with foreign keys" guide
+
+### Bug fixes
+
+  * [Ecto.Changeset] Make keys optional in specs
+  * [Ecto.Enum] Make sure `values/2` works for virtual fields
+  * [Ecto.Query] Fix missing type on CTE queries that select a single field
+
+## v3.5.3 (2020-10-21)
+
+### Bug fixes
+
+  * [Ecto.Query] Do not reset parameter counter for nested CTEs
+  * [Ecto.Type] Fix regression where array type with nils could no longer be cast/load/dump
+  * [Ecto.Type] Fix CaseClauseError when casting a decimal with a binary remainder
+
+## v3.5.2 (2020-10-12)
+
+### Enhancements
+
+  * [Ecto.Repo] Add Repo.reload/2 and Repo.reload!/2
+
+### Bug fixes
+
+  * [Ecto.Changeset] Fix "__schema__/1 is undefined or private" error while inspecting a schemaless changeset
+  * [Ecto.Repo] Invoke `c:Ecto.Repo.default_options/1` per entry-point operation
+
+## v3.5.1 (2020-10-08)
+
+### Enhancements
+
+  * [Ecto.Changeset] Warn if there are duplicate IDs in the parent schema for `cast_assoc/3`/`cast_embed/3`
+  * [Ecto.Schema] Allow `belongs_to` to accept options for parameterized types
+
+### Bug fixes
+
+  * [Ecto.Query] Keep field types when using a subquery with source
+
+## v3.5.0 (2020-10-03)
 
 v3.5 requires Elixir v1.8+.
 
@@ -8,14 +121,23 @@ v3.5 requires Elixir v1.8+.
 
   * [Ecto.Changeset] Ensure `:empty_values` in `cast/4` does not automatically propagate to following cast calls. If you want a given set of `:empty_values` to apply to all `cast/4` calls, change the value stored in `changeset.empty_values` instead
   * [Ecto.Changeset] Do not force repository updates to happen when using `optimistic_lock`
+  * [Ecto.Changeset] Do not automatically share empty values across `cast/3` calls
+  * [Ecto.Query] Consider query prefix in cte/combination query cache
+  * [Ecto.Query] Allow the entry to be marked as nil when using left join with subqueries
+  * [Ecto.Query] Support subqueries inside dynamic expressions
+  * [Ecto.Repo] Fix preloading when using dynamic repos and the sandbox in automatic mode
+  * [Ecto.Repo] Do not duplicate collections when associations are preloaded for repeated elements
 
 ### Enhancements
 
   * [Ecto.Enum] Add `Ecto.Enum` as a custom parameterized type
+  * [Ecto.Query] Allow `:prefix` in `from` to be set to nil
   * [Ecto.Query] Do not restrict subqueries in `where` to map/struct types
+  * [Ecto.Query] Allow atoms in query without interpolation in order to support Ecto.Enum
   * [Ecto.Schema] Do not validate uniqueness if there is a prior error on the field
   * [Ecto.Schema] Allow `redact: true` in `field`
   * [Ecto.Schema] Support parameterized types via `Ecto.ParameterizedType`
+  * [Ecto.Schema] Rewrite embeds and assocs as parameterized types. This means `__schema__(:type, assoc_or_embed)` now returns a parameterized type. To check if something is an association, use `__schema__(:assocs)` or `__schema__(:embeds)` instead
 
 ## v3.4.6 (2020-08-07)
 
@@ -229,7 +351,7 @@ v3.2 requires Elixir v1.6+.
 
   * [Ecto.Association] Ensure we delete an association before inserting when replacing on `has_one`
   * [Ecto.Query] Do not allow interpolated `nil` in literal keyword list when building query
-  * [Ecto.Query] Do not remove literals from combinations, otherwise UNION/INTERSECTION queries may not match the nummber of values in `select`
+  * [Ecto.Query] Do not remove literals from combinations, otherwise UNION/INTERSECTION queries may not match the number of values in `select`
   * [Ecto.Query] Do not attempt to merge at compile-time non-keyword lists given to `select_merge`
   * [Ecto.Repo] Do not override `:through` associations on preload unless forcing
   * [Ecto.Repo] Make sure prefix option cascades to combinations and recursive queries
@@ -252,7 +374,7 @@ v3.2 requires Elixir v1.6+.
 ### Bug fixes
 
   * [Ecto.Changeset] Do not mark `put_assoc` from `[]` to `[]` or from `nil` to `nil` as change
-  * [Ecto.Query] Remove named binding when exluding joins
+  * [Ecto.Query] Remove named binding when excluding joins
   * [mix ecto.gen.repo] Use `:config_path` instead of hardcoding to `config/config.exs`
 
 ## v3.1.5 (2019-06-06)
@@ -271,7 +393,7 @@ v3.2 requires Elixir v1.6+.
 ### Bug fixes
 
   * [Ecto.Changeset] Convert validation enums to lists before adding them as validation metadata
-  * [Ecto.Schema] Properly propragate prefix to join_through source in many_to_many associations
+  * [Ecto.Schema] Properly propagate prefix to join_through source in many_to_many associations
 
 ## v3.1.3 (2019-04-30)
 

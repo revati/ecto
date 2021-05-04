@@ -84,6 +84,11 @@ defmodule Ecto.TypeTest do
     assert dump({:map, :integer}, %{"a" => 1, "b" => 2}) == {:ok, %{"a" => 1, "b" => 2}}
     assert cast({:map, :integer}, %{"a" => "1", "b" => "2"}) == {:ok, %{"a" => 1, "b" => 2}}
 
+    assert load({:map, :integer}, %{"a" => 1, "b" => nil}) == {:ok, %{"a" => 1, "b" => nil}}
+    assert load({:map, :string}, %{"a" => "1", "b" => nil}) == {:ok, %{"a" => "1", "b" => nil}}
+    assert dump({:map, :integer}, %{"a" => 1, "b" => nil}) == {:ok, %{"a" => 1, "b" => nil}}
+    assert cast({:map, :integer}, %{"a" => "1", "b" => nil}) == {:ok, %{"a" => 1, "b" => nil}}
+
     assert load({:map, {:array, :integer}}, %{"a" => [0, 0], "b" => [1, 1]}) == {:ok, %{"a" => [0, 0], "b" => [1, 1]}}
     assert dump({:map, {:array, :integer}}, %{"a" => [0, 0], "b" => [1, 1]}) == {:ok, %{"a" => [0, 0], "b" => [1, 1]}}
     assert cast({:map, {:array, :integer}}, %{"a" => [0, 0], "b" => [1, 1]}) == {:ok, %{"a" => [0, 0], "b" => [1, 1]}}
@@ -95,6 +100,17 @@ defmodule Ecto.TypeTest do
     assert load({:map, :integer}, 1) == :error
     assert dump({:map, :integer}, 1) == :error
     assert cast({:map, :integer}, 1) == :error
+  end
+
+  test "array" do
+    assert load({:array, :integer}, [1]) == {:ok, [1]}
+    assert load({:array, :integer}, [1, nil]) == {:ok, [1, nil]}
+    assert dump({:array, :integer}, [2]) == {:ok, [2]}
+    assert dump({:array, :integer}, [2, nil]) == {:ok, [2, nil]}
+    assert cast({:array, :integer}, [3]) == {:ok, [3]}
+    assert cast({:array, :integer}, ["3"]) == {:ok, [3]}
+    assert cast({:array, :integer}, [3, nil]) == {:ok, [3, nil]}
+    assert cast({:array, :integer}, ["3", nil]) == {:ok, [3, nil]}
   end
 
   test "custom types with array" do
@@ -179,6 +195,7 @@ defmodule Ecto.TypeTest do
     assert cast(:decimal, 1) == {:ok, Decimal.new("1")}
     assert cast(:decimal, Decimal.new("1")) == {:ok, Decimal.new("1")}
     assert cast(:decimal, "nan") == :error
+    assert cast(:decimal, "1.0bad") == :error
 
     assert_raise ArgumentError, ~r"#Decimal<NaN> is not allowed for type :decimal", fn ->
       cast(:decimal, Decimal.new("NaN"))

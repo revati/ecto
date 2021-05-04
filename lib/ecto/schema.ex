@@ -200,7 +200,7 @@ defmodule Ecto.Schema do
   your schema definition. They are not mutually exclusive and can be used
   together.
 
-  Using `@primary_key` should be prefered for single field primary keys and
+  Using `@primary_key` should be preferred for single field primary keys and
   sharing primary key definitions between multiple schemas using macros.
   Setting `@primary_key` also automatically configures the reference types
   for `has_one` and `has_many` associations.
@@ -245,6 +245,13 @@ defmodule Ecto.Schema do
   `:utc_datetime_usec`    | `DateTime` |
 
   **Notes:**
+
+    * When using database migrations provided by "Ecto SQL", you can pass
+      your Ecto type as the column type. However, note the same Ecto type
+      may support multiple database types. For example, all of `:varchar`,
+      `:text`, `:bytea`, etc. translate to Ecto's `:string`. Similarly,
+      Ecto's `:decimal` can be used for `:numeric` and other database
+      types. For more information, see [all migration types](https://hexdocs.pm/ecto_sql/Ecto.Migration.html#module-field-types).
 
     * For the `{:array, inner_type}` and `{:map, inner_type}` type,
       replace `inner_type` with one of the valid types, such as `:string`.
@@ -628,7 +635,12 @@ defmodule Ecto.Schema do
     * `:default` - Sets the default value on the schema and the struct.
       The default value is calculated at compilation time, so don't use
       expressions like `DateTime.utc_now` or `Ecto.UUID.generate` as
-      they would then be the same for all records.
+      they would then be the same for all records: in this scenario you can use
+      the `:autogenerate` option to generate at insertion time.
+
+      Once a default value is set, if you send changes to the changeset that
+      contains the same value defined as default, validations will not be performed
+      since there are no changes after all.
 
     * `:source` - Defines the name that is to be used in database for this field.
       This is useful when attaching to an existing database. The value should be
@@ -751,15 +763,23 @@ defmodule Ecto.Schema do
 
     * `:defaults` - Default values to use when building the association.
       It may be a keyword list of options that override the association schema
-      or a `{module, function, args}` that receive the struct and the owner as
+      or a atom/`{module, function, args}` that receives the struct and the owner as
       arguments. For example, if you set `Post.has_many :comments, defaults: [public: true]`,
-      then when using `Ecto.build_assoc(post, :comments)` that comment will have
+      then when using `Ecto.build_assoc(post, :comments)`, the comment will have
       `comment.public == true`. Alternatively, you can set it to
-      `Post.has_many :comments, defaults: {__MODULE__, :update_comment, []}`
-      and `Post.update_comment(comment, post)` will be invoked.
+      `Post.has_many :comments, defaults: :update_comment`, which will invoke
+      `Post.update_comment(comment, post)`, or set it to a MFA tuple such as
+      `{Mod, fun, [arg3, arg4]}`, which will invoke `Mod.fun(comment, post, arg3, arg4)`
 
     * `:where` - A filter for the association. See "Filtering associations" below.
       It does not apply to `:through` associations.
+
+    * `:preload_order` - Sets the default `order_by` of the association.
+      It is used when the association is preloaded.
+      For example, if you set `Post.has_many :comments, preload_order: [asc: :content]`,
+      whenever the `:comments` associations is preloaded,
+      the comments will be order by the `:content` field.
+      See `Ecto.Query.order_by/3` for more examples.
 
   ## Examples
 
@@ -834,7 +854,9 @@ defmodule Ecto.Schema do
   different associations polluting your schema and affecting your
   application performance. For instance, if you are using associations
   only for different querying purposes, then it is preferable to build
-  and compose queries, rather than defining multiple associations:
+  and compose queries. For instance, instead of having two associations,
+  one for comments and another for deleted comments, you might have
+  a single comments association and filter it instead:
 
       posts
       |> Ecto.assoc(:comments)
@@ -963,12 +985,13 @@ defmodule Ecto.Schema do
 
     * `:defaults` - Default values to use when building the association.
       It may be a keyword list of options that override the association schema
-      or a `{module, function, args}` that receive the struct and the owner as
-      arguments. For example, if you set `Post.has_many :comments, defaults: [public: true]`,
-      then when using `Ecto.build_assoc(post, :comments)` that comment will have
-      `comment.public == true`. Alternatively, you can set it to
-      `Post.has_many :comments, defaults: {__MODULE__, :update_comment, []}`
-      and `Post.update_comment(comment, post)` will be invoked.
+      or as a atom/`{module, function, args}` that receives the struct and the
+      owner as arguments. For example, if you set `Post.has_one :banner, defaults: [public: true]`,
+      then when using `Ecto.build_assoc(post, :banner)`, the banner will have
+      `banner.public == true`. Alternatively, you can set it to
+      `Post.has_one :banner, defaults: :update_banner`, which will invoke
+      `Post.update_banner(banner, post)`, or set it to a MFA tuple such as
+      `{Mod, fun, [arg3, arg4]}`, which will invoke `Mod.fun(banner, post, arg3, arg4)`
 
     * `:where` - A filter for the association. See "Filtering associations"
       in `has_many/3`. It does not apply to `:through` associations.
@@ -1034,12 +1057,13 @@ defmodule Ecto.Schema do
 
     * `:defaults` - Default values to use when building the association.
       It may be a keyword list of options that override the association schema
-      or a `{module, function, args}` that receive the struct and the owner as
-      arguments. For example, if you set `Post.has_many :comments, defaults: [public: true]`,
-      then when using `Ecto.build_assoc(post, :comments)` that comment will have
-      `comment.public == true`. Alternatively, you can set it to
-      `Post.has_many :comments, defaults: {__MODULE__, :update_comment, []}`
-      and `Post.update_comment(comment, post)` will be invoked.
+      or a atom/`{module, function, args}` that receives the struct and the owner as
+      arguments. For example, if you set `Comment.belongs_to :post, defaults: [public: true]`,
+      then when using `Ecto.build_assoc(comment, :post)`, the post will have
+      `post.public == true`. Alternatively, you can set it to
+      `Comment.belongs_to :post, defaults: :update_post`, which will invoke
+      `Comment.update_post(post, comment)`, or set it to a MFA tuple such as
+      `{Mod, fun, [arg3, arg4]}`, which will invoke `Mod.fun(post, comment, arg3, arg4)`
 
     * `:primary_key` - If the underlying belongs_to field is a primary key
 
@@ -1252,12 +1276,13 @@ defmodule Ecto.Schema do
 
     * `:defaults` - Default values to use when building the association.
       It may be a keyword list of options that override the association schema
-      or a `{module, function, args}` that receive the struct and the owner as
-      arguments. For example, if you set `Post.has_many :comments, defaults: [public: true]`,
-      then when using `Ecto.build_assoc(post, :comments)` that comment will have
-      `comment.public == true`. Alternatively, you can set it to
-      `Post.has_many :comments, defaults: {__MODULE__, :update_comment, []}`
-      and `Post.update_comment(comment, post)` will be invoked.
+      or a atom/`{module, function, args}` that receives the struct and the owner as
+      arguments. For example, if you set `Post.many_to_many :tags, defaults: [public: true]`,
+      then when using `Ecto.build_assoc(post, :tags)`, the tag will have
+      `tag.public == true`. Alternatively, you can set it to
+      `Post.many_to_many :tags, defaults: :update_tag`, which will invoke
+      `Post.update_tag(tag, post)`, or set it to a MFA tuple such as
+      `{Mod, fun, [arg3, arg4]}`, which will invoke `Mod.fun(tag, post, arg3, arg4)`
 
     * `:join_defaults` - The same as `:defaults` but it applies to the join schema
       instead. This option will raise if it is given and the `:join_through` value
@@ -1276,6 +1301,46 @@ defmodule Ecto.Schema do
 
     * `:join_where` - A filter for the join table. See "Filtering associations"
       in `has_many/3`
+
+    * `:preload_order` - Sets the default `order_by` of the association.
+      It is used when the association is preloaded.
+      For example, if you set `Post.many_to_many :tags, Tag, join_through: "posts_tags", preload_order: [asc: :foo]`,
+      whenever the `:tags` associations is preloaded, the tags will be order by the `:foo` field.
+      See `Ecto.Query.order_by/3` for more examples.
+
+  ## Using Ecto.assoc/2
+
+  One of the benefits of using `many_to_many` is that Ecto will avoid
+  loading the intermediate whenever possible, making your queries more
+  efficient. For this reason, developers should not refer to the join
+  table of `many_to_many` in queries. The join table is accessible in
+  few occasions, such as in `Ecto.assoc/2`. For example, if you do this:
+
+      post
+      |> Ecto.assoc(:tags)
+      |> where([t, _pt, p], p.public == t.public)
+
+  It may not work as expected because the `posts_tags` table may not be
+  included in the query. You can address this problem in multiple ways.
+  One option is to use `...`:
+
+      post
+      |> Ecto.assoc(:tags)
+      |> where([t, ..., p], p.public == t.public)
+
+  Another and preferred option is to rewrite to an explicit `join`, which
+  ellide the intermediate bindings as they are resolved only later on:
+
+      # keyword syntax
+      from t in Tag,
+        join: p in assoc(t, :post), on: p.id == ^post.id
+
+      # pipe syntax
+      Tag
+      |> join([t], :inner, p in assoc(t, :post), on: p.id == ^post.id)
+
+  If you need to access the join table, then you likely want to use
+  `has_many/3` with the `:through` option instead.
 
   ## Removing data
 
@@ -1796,9 +1861,15 @@ defmodule Ecto.Schema do
 
   @doc false
   def __field__(mod, name, type, opts) do
+    if type == :any and !opts[:virtual] do
+      raise ArgumentError, "only virtual fields can have type :any, " <>
+                           "invalid type for field #{inspect name}"
+    end
+
     type = check_field_type!(mod, name, type, opts)
     Module.put_attribute(mod, :changeset_fields, {name, type})
     Module.put_attribute(mod, :fields_meta, {name, [type: type] ++ opts})
+    validate_default!(type, opts[:default])
     define_field(mod, name, type, opts)
   end
 
@@ -1849,7 +1920,7 @@ defmodule Ecto.Schema do
     end
   end
 
-  @valid_has_options [:foreign_key, :references, :through, :on_delete, :defaults, :on_replace, :where]
+  @valid_has_options [:foreign_key, :references, :through, :on_delete, :defaults, :on_replace, :where, :preload_order]
 
   @doc false
   def __has_many__(mod, name, queryable, opts) do
@@ -1903,7 +1974,7 @@ defmodule Ecto.Schema do
     Module.put_attribute(mod, :fields_meta, {name, [type: struct] ++ opts})
   end
 
-  @valid_many_to_many_options [:join_through, :join_defaults, :join_keys, :on_delete, :defaults, :on_replace, :unique, :where, :join_where]
+  @valid_many_to_many_options [:join_through, :join_defaults, :join_keys, :on_delete, :defaults, :on_replace, :unique, :where, :join_where, :preload_order]
 
   @doc false
   def __many_to_many__(mod, name, queryable, opts) do
@@ -2064,10 +2135,25 @@ defmodule Ecto.Schema do
     Module.put_attribute(mod, :struct_fields, {name, assoc})
   end
 
+  defp validate_default!(type, value) do
+    case Ecto.Type.dump(type, value) do
+      {:ok, _} ->
+        :ok
+      _ ->
+        raise ArgumentError, "value #{inspect(value)} is invalid for type #{inspect(type)}, can't set default"
+    end
+  end
+
   defp check_options!(opts, valid, fun_arity) do
-    case Enum.find(opts, fn {k, _} -> not(k in valid) end) do
-      {k, _} -> raise ArgumentError, "invalid option #{inspect k} for #{fun_arity}"
-      nil -> :ok
+    type = Keyword.get(opts, :type)
+
+    if is_atom(type) and Code.ensure_compiled(type) == {:module, type} and function_exported?(type, :type, 1) do
+      :ok
+    else
+      case Enum.find(opts, fn {k, _} -> not(k in valid) end) do
+        {k, _} -> raise ArgumentError, "invalid option #{inspect k} for #{fun_arity}"
+        nil -> :ok
+      end
     end
   end
 
@@ -2079,10 +2165,6 @@ defmodule Ecto.Schema do
 
   defp check_field_type!(mod, name, type, opts) do
     cond do
-      type == :any and !opts[:virtual] ->
-        raise ArgumentError, "only virtual fields can have type :any, " <>
-                             "invalid type for field #{inspect name}"
-
       composite?(type, name) ->
         {outer_type, inner_type} = type
         {outer_type, check_field_type!(mod, name, inner_type, opts)}
@@ -2094,7 +2176,7 @@ defmodule Ecto.Schema do
         type
 
       is_atom(type) and Code.ensure_compiled(type) == {:module, type} and function_exported?(type, :type, 1) ->
-        {:parameterized, type, type.init(Keyword.merge(opts, field: name, schema: mod))}
+        Ecto.ParameterizedType.init(type, Keyword.merge(opts, field: name, schema: mod))
 
       is_atom(type) and function_exported?(type, :__schema__, 1) ->
         raise ArgumentError,
